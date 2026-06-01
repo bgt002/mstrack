@@ -8,12 +8,14 @@ import {
   BOSS_BY_ID,
   partyMesos,
   maxPartyFor,
-  maxKills,
+  hardestDifficulty,
+  sellsPerCycle,
+  type Reset,
 } from "./bosses";
 import { weekStartUTC, monthStartUTC } from "./reset";
 import { MVP_TIERS, type MvpTier, type RpOverride } from "./rp";
 
-// A character's selection for one boss: which difficulty + party size it's run at.
+// Difficulty + party size a character runs a boss at (lazy override; defaults applied when absent).
 export interface BossSel {
   difficulty: string;
   party: number;
@@ -22,16 +24,17 @@ export interface BossSel {
 export interface Character {
   id: string;
   name: string;
-  bosses: Record<string, BossSel>;
+  bosses: Record<string, BossSel>; // bossId -> chosen difficulty/party
 }
 
-// counts are keyed by `${characterId}:${bossId}` = kills this cycle
-// (drives meso income + crystal totals).
+// killed/sold are keyed by `${characterId}:${bossId}`.
+// killed -> defeated this cycle (drives RP). sold -> crystal sold (drives meso + crystal caps).
 export interface RosterState {
   characters: Character[];
-  counts: Record<string, number>;
-  weekAnchor: number; // weekStartUTC the daily/weekly counts belong to
-  monthAnchor: number; // monthStartUTC the monthly counts belong to
+  killed: Record<string, boolean>;
+  sold: Record<string, boolean>;
+  weekAnchor: number;
+  monthAnchor: number;
   reboot: boolean;
 
   // RP planner
@@ -46,12 +49,11 @@ export interface RosterState {
 
   setBossDifficulty: (charId: string, bossId: string, difficulty: string) => void;
   setBossParty: (charId: string, bossId: string, party: number) => void;
-  unsetBoss: (charId: string, bossId: string) => void;
 
-  setCount: (charId: string, bossId: string, count: number, now: number) => void;
-  toggleDone: (charId: string, bossId: string, now: number) => void; // checkbox: 0 <-> max
-  setAllForCharacter: (charId: string, value: boolean, now: number) => void;
-  resetByType: (reset: "daily" | "weekly" | "monthly") => void;
+  toggleKilled: (charId: string, bossId: string, now: number) => void;
+  toggleSold: (charId: string, bossId: string, now: number) => void;
+  markAll: (charId: string, value: boolean, now: number) => void;
+  resetByType: (reset: Reset) => void;
   reconcile: (now: number) => void;
 
   setReboot: (v: boolean) => void;
@@ -68,13 +70,13 @@ const clampParty = (bossId: string, difficulty: string, party: number) =>
   Math.min(Math.max(1, party), maxPartyFor(bossId, difficulty));
 
 const resetOf = (bossId: string) => BOSS_BY_ID[bossId]?.reset ?? "weekly";
-const maxKillsOf = (bossId: string) => maxKills(resetOf(bossId));
 
 export const useStore = create<RosterState>()(
   persist(
     (set, get) => ({
       characters: [],
-      counts: {},
+      killed: {},
+      sold: {},
       weekAnchor: 0,
       monthAnchor: 0,
       reboot: false,
@@ -98,11 +100,11 @@ export const useStore = create<RosterState>()(
 
       removeCharacter: (id) =>
         set((s) => {
-          const counts = { ...s.counts };
-          Object.keys(counts).forEach((k) => {
-            if (k.startsWith(`${id}:`)) delete counts[k];
-          });
-          return { characters: s.characters.filter((c) => c.id !== id), counts };
+          const killed = { ...s.killed };
+          const sold = { ...s.sold };
+          for (const k of Object.keys(killed)) if (k.startsWith(`${id}:`)) delete killed[k];
+          for (const k of Object.keys(sold)) if (k.startsWith(`${id}:`)) delete sold[k];
+          return { characters: s.characters.filter((c) => c.id !== id), killed, sold };
         }),
 
       reorderCharacter: (id, dir) =>
@@ -115,8 +117,7 @@ export const useStore = create<RosterState>()(
           return { characters: next };
         }),
 
-      // Duplicate a character: copies its tracked bosses (difficulty + party) AND its
-      // current kill counts, remapped to the new character id so they stay independent.
+      // Copy difficulty/party overrides + killed/sold markers to a new character id.
       duplicateCharacter: (id) =>
         set((s) => {
           const idx = s.characters.findIndex((c) => c.id === id);
@@ -130,15 +131,15 @@ export const useStore = create<RosterState>()(
               Object.entries(src.bosses).map(([bid, sel]) => [bid, { ...sel }])
             ),
           };
-          const counts = { ...s.counts };
-          for (const [k, v] of Object.entries(s.counts)) {
-            if (k.startsWith(`${id}:`)) {
-              counts[`${newId}:${k.slice(k.indexOf(":") + 1)}`] = v;
-            }
-          }
+          const killed = { ...s.killed };
+          const sold = { ...s.sold };
+          for (const [k, v] of Object.entries(s.killed))
+            if (k.startsWith(`${id}:`)) killed[`${newId}:${k.slice(k.indexOf(":") + 1)}`] = v;
+          for (const [k, v] of Object.entries(s.sold))
+            if (k.startsWith(`${id}:`)) sold[`${newId}:${k.slice(k.indexOf(":") + 1)}`] = v;
           const characters = [...s.characters];
           characters.splice(idx + 1, 0, dup);
-          return { characters, counts };
+          return { characters, killed, sold };
         }),
 
       setBossDifficulty: (charId, bossId, difficulty) =>
@@ -160,97 +161,108 @@ export const useStore = create<RosterState>()(
         set((s) => ({
           characters: s.characters.map((ch) => {
             if (ch.id !== charId) return ch;
-            const sel = ch.bosses[bossId];
-            if (!sel) return ch;
+            const difficulty = ch.bosses[bossId]?.difficulty ?? hardestDifficulty(bossId);
             return {
               ...ch,
               bosses: {
                 ...ch.bosses,
-                [bossId]: { ...sel, party: clampParty(bossId, sel.difficulty, party) },
+                [bossId]: { difficulty, party: clampParty(bossId, difficulty, party) },
               },
             };
           }),
         })),
 
-      unsetBoss: (charId, bossId) =>
-        set((s) => {
-          const counts = { ...s.counts };
-          delete counts[clearKey(charId, bossId)];
-          return {
-            counts,
-            characters: s.characters.map((ch) => {
-              if (ch.id !== charId) return ch;
-              const bosses = { ...ch.bosses };
-              delete bosses[bossId];
-              return { ...ch, bosses };
-            }),
-          };
-        }),
-
-      setCount: (charId, bossId, count, now) => {
+      // Killing is required to sell: toggling killed off also clears sold.
+      toggleKilled: (charId, bossId, now) => {
         get().reconcile(now);
         set((s) => {
           const key = clearKey(charId, bossId);
-          const n = Math.min(Math.max(0, Math.round(count)), maxKillsOf(bossId));
-          const counts = { ...s.counts };
-          if (n <= 0) delete counts[key];
-          else counts[key] = n;
-          return { counts };
-        });
-      },
-
-      toggleDone: (charId, bossId, now) => {
-        get().reconcile(now);
-        set((s) => {
-          const key = clearKey(charId, bossId);
-          const max = maxKillsOf(bossId);
-          const counts = { ...s.counts };
-          if ((counts[key] ?? 0) >= max) delete counts[key];
-          else counts[key] = max;
-          return { counts };
-        });
-      },
-
-      setAllForCharacter: (charId, value, now) => {
-        get().reconcile(now);
-        set((s) => {
-          const ch = s.characters.find((c) => c.id === charId);
-          if (!ch) return s;
-          const counts = { ...s.counts };
-          for (const bossId of Object.keys(ch.bosses)) {
-            const key = clearKey(charId, bossId);
-            if (value) counts[key] = maxKillsOf(bossId);
-            else delete counts[key];
+          const next = !s.killed[key];
+          const killed = { ...s.killed };
+          const sold = { ...s.sold };
+          if (next) killed[key] = true;
+          else {
+            delete killed[key];
+            delete sold[key];
           }
-          return { counts };
+          return { killed, sold };
+        });
+      },
+
+      // Selling implies killing.
+      toggleSold: (charId, bossId, now) => {
+        get().reconcile(now);
+        set((s) => {
+          const key = clearKey(charId, bossId);
+          const next = !s.sold[key];
+          const killed = { ...s.killed };
+          const sold = { ...s.sold };
+          if (next) {
+            sold[key] = true;
+            killed[key] = true;
+          } else {
+            delete sold[key];
+          }
+          return { killed, sold };
+        });
+      },
+
+      markAll: (charId, value, now) => {
+        get().reconcile(now);
+        set((s) => {
+          const killed = { ...s.killed };
+          const sold = { ...s.sold };
+          for (const boss of BOSSES) {
+            const key = clearKey(charId, boss.id);
+            if (value) {
+              killed[key] = true;
+              sold[key] = true;
+            } else {
+              delete killed[key];
+              delete sold[key];
+            }
+          }
+          return { killed, sold };
         });
       },
 
       resetByType: (reset) =>
         set((s) => {
-          const counts = { ...s.counts };
-          for (const key of Object.keys(counts)) {
-            const bossId = key.slice(key.indexOf(":") + 1);
-            if (resetOf(bossId) === reset) delete counts[key];
-          }
-          return { counts };
+          const killed = { ...s.killed };
+          const sold = { ...s.sold };
+          const prune = (m: Record<string, boolean>) => {
+            for (const key of Object.keys(m)) {
+              if (resetOf(key.slice(key.indexOf(":") + 1)) === reset) delete m[key];
+            }
+          };
+          prune(killed);
+          prune(sold);
+          return { killed, sold };
         }),
 
-      // Daily + weekly counts belong to a Maple week (Thursday→Thursday); monthly
-      // counts belong to a calendar month. Zero them when their cycle rolls over.
+      // Daily + weekly markers reset on the Maple week (Thursday); monthly on the calendar month.
       reconcile: (now) =>
         set((s) => {
           const wk = weekStartUTC(now);
           const mo = monthStartUTC(now);
           if (s.weekAnchor === wk && s.monthAnchor === mo) return s;
-          const counts = { ...s.counts };
-          for (const key of Object.keys(counts)) {
-            const reset = resetOf(key.slice(key.indexOf(":") + 1));
-            if ((reset === "daily" || reset === "weekly") && s.weekAnchor !== wk)
-              delete counts[key];
-            if (reset === "monthly" && s.monthAnchor !== mo) delete counts[key];
-          }
-          return { counts, weekAnchor: wk, monthAnchor: mo };
+          const filter = (m: Record<string, boolean>) => {
+            const out: Record<string, boolean> = {};
+            for (const [key, v] of Object.entries(m)) {
+              const reset = resetOf(key.slice(key.indexOf(":") + 1));
+              const stale =
+                ((reset === "daily" || reset === "weekly") && s.weekAnchor !== wk) ||
+                (reset === "monthly" && s.monthAnchor !== mo);
+              if (!stale) out[key] = v;
+            }
+            return out;
+          };
+          return {
+            killed: filter(s.killed),
+            sold: filter(s.sold),
+            weekAnchor: wk,
+            monthAnchor: mo,
+          };
         }),
 
       setReboot: (v) => set({ reboot: v }),
@@ -264,10 +276,11 @@ export const useStore = create<RosterState>()(
     }),
     {
       name: "mapletracker-roster",
-      version: 6,
+      version: 7,
       partialize: (s) => ({
         characters: s.characters,
-        counts: s.counts,
+        killed: s.killed,
+        sold: s.sold,
         weekAnchor: s.weekAnchor,
         monthAnchor: s.monthAnchor,
         reboot: s.reboot,
@@ -282,13 +295,11 @@ export const useStore = create<RosterState>()(
           activePageId?: string;
         };
 
-        // v5 wrapped everything into pages; unwrap back to the active page (flat model).
+        // v5 wrapped state in pages; unwrap the active page.
         if (s.pages) {
-          const active =
-            s.pages.find((p) => p.id === s.activePageId) ?? s.pages[0] ?? {};
+          const active = s.pages.find((p) => p.id === s.activePageId) ?? s.pages[0] ?? {};
           s = { ...(active as typeof s) };
         }
-
         // v1 -> bosses were difficulty strings.
         if (version < 2 && s.characters) {
           s.characters = s.characters.map((ch) => ({
@@ -309,19 +320,32 @@ export const useStore = create<RosterState>()(
             bosses: (ch.bosses ?? {}) as Record<string, BossSel>,
           }));
         }
-        // v3 -> convert boolean/timestamp `cleared` into kill `counts` (cleared => max).
+        // v3 -> cleared(boolean/ts) became counts.
         if (version < 4) {
           const cleared = (s.cleared ?? {}) as Record<string, unknown>;
           const counts: Record<string, number> = {};
-          for (const [k, v] of Object.entries(cleared)) {
-            if (v) counts[k] = maxKillsOf(k.slice(k.indexOf(":") + 1));
-          }
+          for (const [k, v] of Object.entries(cleared)) if (v) counts[k] = 1;
           s.counts = counts;
           delete s.cleared;
           delete s.weeklySold;
         }
+        // v7 -> split `counts` (kills that were also sold) into killed + sold markers.
+        if (version < 7) {
+          const counts = (s.counts ?? {}) as Record<string, number>;
+          const killed: Record<string, boolean> = {};
+          const sold: Record<string, boolean> = {};
+          for (const [k, v] of Object.entries(counts)) {
+            if (v && k.slice(k.indexOf(":") + 1) in BOSS_BY_ID) {
+              killed[k] = true;
+              sold[k] = true;
+            }
+          }
+          s.killed = killed;
+          s.sold = sold;
+          delete s.counts;
+        }
 
-        // Normalize + prune any references to removed/unknown bosses.
+        // Normalize characters + prune unknown bosses.
         s.characters = ((s.characters ?? []) as Character[]).map((ch) => ({
           id: ch.id ?? uid(),
           name: ch.name,
@@ -329,11 +353,6 @@ export const useStore = create<RosterState>()(
             Object.entries(ch.bosses ?? {}).filter(([bid]) => bid in BOSS_BY_ID)
           ) as Record<string, BossSel>,
         }));
-        const counts: Record<string, number> = {};
-        for (const [k, v] of Object.entries((s.counts ?? {}) as Record<string, number>)) {
-          if (k.slice(k.indexOf(":") + 1) in BOSS_BY_ID) counts[k] = v;
-        }
-        s.counts = counts;
         s.weekAnchor = (s.weekAnchor as number) ?? weekStartUTC(now);
         s.monthAnchor = (s.monthAnchor as number) ?? monthStartUTC(now);
         s.reboot = (s.reboot as boolean) ?? false;
@@ -363,54 +382,78 @@ export function useHydrated(): boolean {
 
 const mult = (reboot: boolean) => (reboot ? 5 : 1);
 
-export function selMesos(sel: BossSel, bossId: string, reboot: boolean): number {
-  return partyMesos(bossId, sel.difficulty, sel.party, mult(reboot));
+export function diffOf(ch: Character, bossId: string): string {
+  return ch.bosses[bossId]?.difficulty ?? hardestDifficulty(bossId);
+}
+export function partyOf(ch: Character, bossId: string): number {
+  return ch.bosses[bossId]?.party ?? 1;
 }
 
-export function bossCount(counts: Record<string, number>, charId: string, bossId: string): number {
-  return counts[clearKey(charId, bossId)] ?? 0;
+// Meso for selling one of this boss's crystals (party-split, reboot-adjusted).
+export function sellValue(ch: Character, bossId: string, reboot: boolean): number {
+  return partyMesos(bossId, diffOf(ch, bossId), partyOf(ch, bossId), mult(reboot));
 }
 
-// Weekly meso this character makes from kills entered.
+export function isKilled(killed: Record<string, boolean>, charId: string, bossId: string): boolean {
+  return !!killed[clearKey(charId, bossId)];
+}
+export function isSold(sold: Record<string, boolean>, charId: string, bossId: string): boolean {
+  return !!sold[clearKey(charId, bossId)];
+}
+
+// Meso a character earns from crystals it has marked sold (daily sells count x7/week).
 export function characterMesos(
   ch: Character,
-  counts: Record<string, number>,
+  sold: Record<string, boolean>,
   reboot: boolean
 ): number {
-  return Object.entries(ch.bosses).reduce((sum, [bossId, sel]) => {
-    return sum + selMesos(sel, bossId, reboot) * bossCount(counts, ch.id, bossId);
-  }, 0);
+  let sum = 0;
+  for (const boss of BOSSES) {
+    if (isSold(sold, ch.id, boss.id))
+      sum += sellValue(ch, boss.id, reboot) * sellsPerCycle(boss.reset);
+  }
+  return sum;
 }
 
-// Max possible weekly meso if every tracked boss is fully killed.
-export function characterPotential(ch: Character, reboot: boolean): number {
-  return Object.entries(ch.bosses).reduce((sum, [bossId, sel]) => {
-    return sum + selMesos(sel, bossId, reboot) * maxKills(resetOf(bossId));
-  }, 0);
+// Crystals a character has sold — counts toward the 180 account cap (daily x7).
+export function characterCrystals(ch: Character, sold: Record<string, boolean>): number {
+  let n = 0;
+  for (const boss of BOSSES) if (isSold(sold, ch.id, boss.id)) n += sellsPerCycle(boss.reset);
+  return n;
 }
 
-// Total crystals (kills) on this character — counts toward the 180 account cap.
-export function characterCrystals(ch: Character, counts: Record<string, number>): number {
-  return Object.keys(ch.bosses).reduce((n, bossId) => n + bossCount(counts, ch.id, bossId), 0);
+// Weekly crystals a character has sold — counts toward the 14/character cap.
+export function characterWeeklyCrystals(ch: Character, sold: Record<string, boolean>): number {
+  let n = 0;
+  for (const boss of BOSSES)
+    if (boss.reset === "weekly" && isSold(sold, ch.id, boss.id)) n += 1;
+  return n;
 }
 
-// Weekly crystals (kills of weekly bosses) — counts toward the 14/character cap.
-export function characterWeeklyCrystals(ch: Character, counts: Record<string, number>): number {
-  return Object.keys(ch.bosses).reduce(
-    (n, bossId) => (resetOf(bossId) === "weekly" ? n + bossCount(counts, ch.id, bossId) : n),
-    0
-  );
-}
-
-// Count of bosses of a given reset type tracked across the whole roster.
-export function totalBossesTrackedByReset(
-  characters: Character[],
-  reset: "daily" | "weekly" | "monthly"
+// Count of bosses of a reset type a character has KILLED (per-character RP contribution).
+export function killedCountByReset(
+  ch: Character,
+  killed: Record<string, boolean>,
+  reset: Reset
 ): number {
-  return characters.reduce(
-    (n, ch) => n + Object.keys(ch.bosses).filter((b) => resetOf(b) === reset).length,
-    0
-  );
+  let n = 0;
+  for (const boss of BOSSES)
+    if (boss.reset === reset && isKilled(killed, ch.id, boss.id)) n += 1;
+  return n;
+}
+
+// DISTINCT bosses of a reset KILLED across the roster. RP is per world, so the same boss
+// killed on multiple characters only counts once.
+export function distinctKilledByReset(
+  characters: Character[],
+  killed: Record<string, boolean>,
+  reset: Reset
+): number {
+  const set = new Set<string>();
+  for (const ch of characters)
+    for (const boss of BOSSES)
+      if (boss.reset === reset && isKilled(killed, ch.id, boss.id)) set.add(boss.id);
+  return set.size;
 }
 
 export { BOSSES, MVP_TIERS };

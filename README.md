@@ -10,10 +10,13 @@ Everything lives on one page (`/`). All data is stored locally in your browser
 
 - **Dashboard** — account-wide totals (weekly meso, crystals/180, monthly RP) plus a per-character
   overview (meso/week, crystals, monthly boss RP) you can click to drill into.
-- **Per-character view** — click a character to see its own weekly meso, potential, crystals, and
-  **monthly RP from its selected bosses** (daily/weekly/monthly breakdown), above its boss checklist.
+- **Per-character grid** — click a character to see **all bosses** in a 4-per-row grid (Daily/Weekly/
+  Monthly), each with a difficulty selector and two markers: **Killed** (earns RP) and **Sold** (earns
+  mesos). Dailies count as the full week (×7). Header shows that character's weekly meso, crystals
+  sold, and **monthly RP from kills**.
+- **Killed vs Sold** — RP is granted on kill (per world), mesos on selling crystals; tracking them
+  separately keeps both accurate (e.g. you can kill for RP without selling toward the 14/180 caps).
 - **Characters, inline** — add characters by name as tabs; rename, reorder, **duplicate**, delete.
-  Duplicating copies the character's tracked bosses and current kill counts into an independent copy.
 - Bosses are listed **cheapest-first** within each Daily/Weekly/Monthly section.
 - **Per-character boss checklist** — click **+ Add boss** to pick the bosses each character runs
   (difficulty Easy → Extreme), then check them off. Boss icons from [maplestory.io](https://maplestory.io).

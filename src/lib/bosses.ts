@@ -391,6 +391,17 @@ export function maxPartyFor(bossId: string, difficulty: string): number {
   return difficultyFor(bossId, difficulty)?.maxParty ?? 6;
 }
 
+// Default selected difficulty for a boss = its hardest available tier.
+export function hardestDifficulty(bossId: string): string {
+  const b = BOSS_BY_ID[bossId];
+  return b ? b.difficulties[b.difficulties.length - 1].difficulty : "Normal";
+}
+
+// Sells/kills per week for a reset cadence: dailies up to 7, weekly/monthly once.
+export function sellsPerCycle(reset: Reset): number {
+  return reset === "daily" ? 7 : 1;
+}
+
 // Per-member crystal value for a given party size and world multiplier.
 // Base table values are split first (floor), then quintupled in Heroic worlds.
 export function partyMesos(

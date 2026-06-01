@@ -40,7 +40,7 @@ export const RP_ACTIVITIES: RpActivity[] = [
     defaultRp: 30,
     defaultQty: 0,
     qtyLabel: "# daily bosses",
-    note: "30 per boss per difficulty, once a day (excludes Balrog & Julieta). Qty defaults to your tracked daily bosses.",
+    note: "30 per boss, once a day per world (excludes Balrog & Julieta). Qty = distinct daily bosses across your roster — the same boss on multiple characters only counts once.",
   },
   {
     id: "monster-collection",
@@ -102,7 +102,7 @@ export const RP_ACTIVITIES: RpActivity[] = [
     defaultRp: 200,
     defaultQty: 0,
     qtyLabel: "# weekly bosses",
-    note: "200 RP per weekly boss (once a week, any difficulty). Qty defaults to your tracked weekly bosses.",
+    note: "200 per weekly boss, once a week per world. Qty = distinct weekly bosses across your roster — the same boss on multiple characters only counts once.",
   },
   {
     id: "other-weekly",
@@ -121,7 +121,7 @@ export const RP_ACTIVITIES: RpActivity[] = [
     defaultRp: 1000,
     defaultQty: 0,
     qtyLabel: "# monthly bosses",
-    note: "1,000 per boss per difficulty (e.g. Black Mage). Qty defaults to your tracked monthly bosses.",
+    note: "1,000 per monthly boss, once a month per world (e.g. Black Mage). Qty = distinct monthly bosses across your roster.",
   },
   {
     id: "fairy-day7",
