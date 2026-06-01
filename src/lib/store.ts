@@ -8,7 +8,7 @@ import {
   BOSS_BY_ID,
   partyMesos,
   maxPartyFor,
-  hardestDifficulty,
+  defaultDifficulty,
   sellsPerCycle,
   type Reset,
 } from "./bosses";
@@ -24,15 +24,21 @@ export interface BossSel {
 export interface Character {
   id: string;
   name: string;
+  account: string; // characters sharing account+world share one RP pool (per world)
+  world: string;
   bosses: Record<string, BossSel>; // bossId -> chosen difficulty/party
 }
 
+export const DEFAULT_ACCOUNT = "Account 1";
+export const DEFAULT_WORLD = "Kronos";
+
 // killed/sold are keyed by `${characterId}:${bossId}`.
-// killed -> defeated this cycle (drives RP). sold -> crystal sold (drives meso + crystal caps).
+// killed -> defeated this cycle (drives RP). sold -> number of crystals sold this week
+// (daily 0-7, weekly/monthly 0-1) — drives meso + crystal caps.
 export interface RosterState {
   characters: Character[];
   killed: Record<string, boolean>;
-  sold: Record<string, boolean>;
+  sold: Record<string, number>;
   weekAnchor: number;
   monthAnchor: number;
   reboot: boolean;
@@ -43,6 +49,8 @@ export interface RosterState {
 
   addCharacter: (name: string) => void;
   renameCharacter: (id: string, name: string) => void;
+  setAccount: (id: string, account: string) => void;
+  setWorld: (id: string, world: string) => void;
   removeCharacter: (id: string) => void;
   reorderCharacter: (id: string, dir: -1 | 1) => void;
   duplicateCharacter: (id: string) => void;
@@ -51,8 +59,9 @@ export interface RosterState {
   setBossParty: (charId: string, bossId: string, party: number) => void;
 
   toggleKilled: (charId: string, bossId: string, now: number) => void;
-  toggleSold: (charId: string, bossId: string, now: number) => void;
-  markAll: (charId: string, value: boolean, now: number) => void;
+  setSold: (charId: string, bossId: string, count: number, now: number) => void;
+  markAllKilled: (charId: string, reset: Reset, now: number) => void;
+  clearAll: (charId: string, now: number) => void;
   resetByType: (reset: Reset) => void;
   reconcile: (now: number) => void;
 
@@ -84,17 +93,41 @@ export const useStore = create<RosterState>()(
       mvpTier: "None",
 
       addCharacter: (name) =>
-        set((s) => ({
-          characters: [
-            ...s.characters,
-            { id: uid(), name: name.trim() || "New Character", bosses: {} },
-          ],
-        })),
+        set((s) => {
+          // default new characters to the most-recently-used account/world
+          const last = s.characters[s.characters.length - 1];
+          return {
+            characters: [
+              ...s.characters,
+              {
+                id: uid(),
+                name: name.trim() || "New Character",
+                account: last?.account ?? DEFAULT_ACCOUNT,
+                world: last?.world ?? DEFAULT_WORLD,
+                bosses: {},
+              },
+            ],
+          };
+        }),
 
       renameCharacter: (id, name) =>
         set((s) => ({
           characters: s.characters.map((ch) =>
             ch.id === id ? { ...ch, name: name.trim() || ch.name } : ch
+          ),
+        })),
+
+      setAccount: (id, account) =>
+        set((s) => ({
+          characters: s.characters.map((ch) =>
+            ch.id === id ? { ...ch, account: account.trim() || ch.account } : ch
+          ),
+        })),
+
+      setWorld: (id, world) =>
+        set((s) => ({
+          characters: s.characters.map((ch) =>
+            ch.id === id ? { ...ch, world: world.trim() || ch.world } : ch
           ),
         })),
 
@@ -127,6 +160,8 @@ export const useStore = create<RosterState>()(
           const dup: Character = {
             id: newId,
             name: `${src.name} (copy)`,
+            account: src.account,
+            world: src.world,
             bosses: Object.fromEntries(
               Object.entries(src.bosses).map(([bid, sel]) => [bid, { ...sel }])
             ),
@@ -161,7 +196,7 @@ export const useStore = create<RosterState>()(
         set((s) => ({
           characters: s.characters.map((ch) => {
             if (ch.id !== charId) return ch;
-            const difficulty = ch.bosses[bossId]?.difficulty ?? hardestDifficulty(bossId);
+            const difficulty = ch.bosses[bossId]?.difficulty ?? defaultDifficulty(bossId);
             return {
               ...ch,
               bosses: {
@@ -189,38 +224,44 @@ export const useStore = create<RosterState>()(
         });
       },
 
-      // Selling implies killing.
-      toggleSold: (charId, bossId, now) => {
+      // Set how many crystals were sold this week (selling implies killing).
+      setSold: (charId, bossId, count, now) => {
         get().reconcile(now);
         set((s) => {
           const key = clearKey(charId, bossId);
-          const next = !s.sold[key];
+          const max = sellsPerCycle(resetOf(bossId));
+          const n = Math.min(Math.max(0, Math.round(count)), max);
           const killed = { ...s.killed };
           const sold = { ...s.sold };
-          if (next) {
-            sold[key] = true;
+          if (n <= 0) delete sold[key];
+          else {
+            sold[key] = n;
             killed[key] = true;
-          } else {
-            delete sold[key];
           }
           return { killed, sold };
         });
       },
 
-      markAll: (charId, value, now) => {
+      markAllKilled: (charId, reset, now) => {
+        get().reconcile(now);
+        set((s) => {
+          const killed = { ...s.killed };
+          for (const boss of BOSSES) {
+            if (boss.reset === reset) killed[clearKey(charId, boss.id)] = true;
+          }
+          return { killed };
+        });
+      },
+
+      clearAll: (charId, now) => {
         get().reconcile(now);
         set((s) => {
           const killed = { ...s.killed };
           const sold = { ...s.sold };
           for (const boss of BOSSES) {
             const key = clearKey(charId, boss.id);
-            if (value) {
-              killed[key] = true;
-              sold[key] = true;
-            } else {
-              delete killed[key];
-              delete sold[key];
-            }
+            delete killed[key];
+            delete sold[key];
           }
           return { killed, sold };
         });
@@ -230,7 +271,7 @@ export const useStore = create<RosterState>()(
         set((s) => {
           const killed = { ...s.killed };
           const sold = { ...s.sold };
-          const prune = (m: Record<string, boolean>) => {
+          const prune = (m: Record<string, unknown>) => {
             for (const key of Object.keys(m)) {
               if (resetOf(key.slice(key.indexOf(":") + 1)) === reset) delete m[key];
             }
@@ -246,8 +287,8 @@ export const useStore = create<RosterState>()(
           const wk = weekStartUTC(now);
           const mo = monthStartUTC(now);
           if (s.weekAnchor === wk && s.monthAnchor === mo) return s;
-          const filter = (m: Record<string, boolean>) => {
-            const out: Record<string, boolean> = {};
+          function filter<T>(m: Record<string, T>): Record<string, T> {
+            const out: Record<string, T> = {};
             for (const [key, v] of Object.entries(m)) {
               const reset = resetOf(key.slice(key.indexOf(":") + 1));
               const stale =
@@ -256,7 +297,7 @@ export const useStore = create<RosterState>()(
               if (!stale) out[key] = v;
             }
             return out;
-          };
+          }
           return {
             killed: filter(s.killed),
             sold: filter(s.sold),
@@ -276,7 +317,7 @@ export const useStore = create<RosterState>()(
     }),
     {
       name: "mapletracker-roster",
-      version: 7,
+      version: 9,
       partialize: (s) => ({
         characters: s.characters,
         killed: s.killed,
@@ -344,11 +385,22 @@ export const useStore = create<RosterState>()(
           s.sold = sold;
           delete s.counts;
         }
+        // v8 -> `sold` became a per-week count (daily 0-7). Convert booleans: a sold daily
+        // was previously treated as the full week (7), weekly/monthly as 1.
+        if (version < 8 && s.sold) {
+          const soldNum: Record<string, number> = {};
+          for (const [k, v] of Object.entries(s.sold as Record<string, unknown>)) {
+            if (v) soldNum[k] = sellsPerCycle(resetOf(k.slice(k.indexOf(":") + 1)));
+          }
+          s.sold = soldNum;
+        }
 
-        // Normalize characters + prune unknown bosses.
-        s.characters = ((s.characters ?? []) as Character[]).map((ch) => ({
+        // Normalize characters + prune unknown bosses; default account/world (added v9).
+        s.characters = ((s.characters ?? []) as Partial<Character>[]).map((ch) => ({
           id: ch.id ?? uid(),
-          name: ch.name,
+          name: ch.name ?? "Character",
+          account: ch.account ?? DEFAULT_ACCOUNT,
+          world: ch.world ?? DEFAULT_WORLD,
           bosses: Object.fromEntries(
             Object.entries(ch.bosses ?? {}).filter(([bid]) => bid in BOSS_BY_ID)
           ) as Record<string, BossSel>,
@@ -383,7 +435,7 @@ export function useHydrated(): boolean {
 const mult = (reboot: boolean) => (reboot ? 5 : 1);
 
 export function diffOf(ch: Character, bossId: string): string {
-  return ch.bosses[bossId]?.difficulty ?? hardestDifficulty(bossId);
+  return ch.bosses[bossId]?.difficulty ?? defaultDifficulty(bossId);
 }
 export function partyOf(ch: Character, bossId: string): number {
   return ch.bosses[bossId]?.party ?? 1;
@@ -397,40 +449,67 @@ export function sellValue(ch: Character, bossId: string, reboot: boolean): numbe
 export function isKilled(killed: Record<string, boolean>, charId: string, bossId: string): boolean {
   return !!killed[clearKey(charId, bossId)];
 }
-export function isSold(sold: Record<string, boolean>, charId: string, bossId: string): boolean {
-  return !!sold[clearKey(charId, bossId)];
+// Number of crystals sold this week for a character's boss.
+export function soldCount(sold: Record<string, number>, charId: string, bossId: string): number {
+  return sold[clearKey(charId, bossId)] ?? 0;
 }
 
-// Meso a character earns from crystals it has marked sold (daily sells count x7/week).
+// Meso a character earns from the crystals it sold this week.
 export function characterMesos(
   ch: Character,
-  sold: Record<string, boolean>,
+  sold: Record<string, number>,
   reboot: boolean
 ): number {
   let sum = 0;
   for (const boss of BOSSES) {
-    if (isSold(sold, ch.id, boss.id))
-      sum += sellValue(ch, boss.id, reboot) * sellsPerCycle(boss.reset);
+    const n = soldCount(sold, ch.id, boss.id);
+    if (n > 0) sum += sellValue(ch, boss.id, reboot) * n;
   }
   return sum;
 }
 
-// Crystals a character has sold — counts toward the 180 account cap (daily x7).
-export function characterCrystals(ch: Character, sold: Record<string, boolean>): number {
+// Crystals a character has sold — counts toward the 180 account cap.
+export function characterCrystals(ch: Character, sold: Record<string, number>): number {
   let n = 0;
-  for (const boss of BOSSES) if (isSold(sold, ch.id, boss.id)) n += sellsPerCycle(boss.reset);
+  for (const boss of BOSSES) n += soldCount(sold, ch.id, boss.id);
   return n;
 }
 
 // Weekly crystals a character has sold — counts toward the 14/character cap.
-export function characterWeeklyCrystals(ch: Character, sold: Record<string, boolean>): number {
+export function characterWeeklyCrystals(ch: Character, sold: Record<string, number>): number {
   let n = 0;
   for (const boss of BOSSES)
-    if (boss.reset === "weekly" && isSold(sold, ch.id, boss.id)) n += 1;
+    if (boss.reset === "weekly") n += soldCount(sold, ch.id, boss.id);
   return n;
 }
 
-// Count of bosses of a reset type a character has KILLED (per-character RP contribution).
+const sameGroup = (a: Character, b: Character) =>
+  a.account === b.account && a.world === b.world;
+
+// RP is per account+world: if two characters share an account+world, only the FIRST
+// (in roster order) to kill a boss claims its RP. This returns the count of bosses of a
+// reset type this character CLAIMS — i.e. killed and not already claimed by an earlier
+// character in the same account+world. Per-character claims sum to each group's distinct
+// total, so dashboard totals never double-count within a world.
+export function claimedKilledByReset(
+  ch: Character,
+  characters: Character[],
+  killed: Record<string, boolean>,
+  reset: Reset
+): number {
+  let n = 0;
+  for (const boss of BOSSES) {
+    if (boss.reset !== reset) continue;
+    if (!isKilled(killed, ch.id, boss.id)) continue;
+    const claimer = characters.find(
+      (c) => sameGroup(c, ch) && isKilled(killed, c.id, boss.id)
+    );
+    if (claimer && claimer.id === ch.id) n += 1;
+  }
+  return n;
+}
+
+// Raw count of bosses of a reset a character killed (per-character, no dedup).
 export function killedCountByReset(
   ch: Character,
   killed: Record<string, boolean>,
@@ -442,18 +521,27 @@ export function killedCountByReset(
   return n;
 }
 
-// DISTINCT bosses of a reset KILLED across the roster. RP is per world, so the same boss
-// killed on multiple characters only counts once.
-export function distinctKilledByReset(
+// RP-eligible boss kills for a character:
+//   daily   -> shared per account+world (only the first claimer counts)
+//   weekly/monthly -> per character (cleared on separate days, so they stack)
+export function rpUnitsForChar(
+  ch: Character,
   characters: Character[],
   killed: Record<string, boolean>,
   reset: Reset
 ): number {
-  const set = new Set<string>();
-  for (const ch of characters)
-    for (const boss of BOSSES)
-      if (boss.reset === reset && isKilled(killed, ch.id, boss.id)) set.add(boss.id);
-  return set.size;
+  return reset === "daily"
+    ? claimedKilledByReset(ch, characters, killed, "daily")
+    : killedCountByReset(ch, killed, reset);
+}
+
+// Total boss RP units of a reset across the roster (sum of per-character eligible kills).
+export function rpBossCount(
+  characters: Character[],
+  killed: Record<string, boolean>,
+  reset: Reset
+): number {
+  return characters.reduce((n, ch) => n + rpUnitsForChar(ch, characters, killed, reset), 0);
 }
 
 export { BOSSES, MVP_TIERS };

@@ -8,37 +8,33 @@ import {
   useHydrated,
   sellValue,
   isKilled,
-  isSold,
+  soldCount,
   diffOf,
   characterMesos,
   characterCrystals,
   characterWeeklyCrystals,
-  killedCountByReset,
-  distinctKilledByReset,
+  rpUnitsForChar,
+  rpBossCount,
   type Character,
 } from "@/lib/store";
+import { WORLDS } from "@/lib/classes";
 import {
   BOSSES,
   DIFFICULTY_COLOR,
   formatMesos,
   formatMesosFull,
   maxPartyFor,
-  soloMesos,
+  sortPrice,
   sellsPerCycle,
   WEEKLY_CRYSTAL_LIMIT,
   WEEKLY_PER_CHARACTER_LIMIT,
   type Reset,
 } from "@/lib/bosses";
-import { nextResetLabel, daysInMonth, thursdaysInMonth } from "@/lib/reset";
+import { nextResetLabel } from "@/lib/reset";
 import {
-  RP_ACTIVITIES,
   RP_BY_ID,
-  MVP_TIERS,
   MONTHLY_RP_CAP,
   computeMonthlyRp,
-  mvpAdjustedRp,
-  type MvpTier,
-  type RpGroup,
   type RpOverride,
 } from "@/lib/rp";
 
@@ -66,8 +62,9 @@ export default function TrackerPage() {
   const setBossDifficulty = useStore((s) => s.setBossDifficulty);
   const setBossParty = useStore((s) => s.setBossParty);
   const toggleKilled = useStore((s) => s.toggleKilled);
-  const toggleSold = useStore((s) => s.toggleSold);
-  const markAll = useStore((s) => s.markAll);
+  const setSold = useStore((s) => s.setSold);
+  const markAllKilled = useStore((s) => s.markAllKilled);
+  const clearAll = useStore((s) => s.clearAll);
   const resetByType = useStore((s) => s.resetByType);
 
   const [view, setView] = useState<string>("dashboard"); // "dashboard" | charId
@@ -192,7 +189,6 @@ export default function TrackerPage() {
             killed={killed}
             sold={sold}
             reboot={reboot}
-            now={now}
             onRename={(name) => renameCharacter(active.id, name)}
             onRemove={() => {
               if (confirm(`Delete ${active.name}?`)) {
@@ -205,8 +201,9 @@ export default function TrackerPage() {
             onSetParty={(bossId, p) => setBossParty(active.id, bossId, p)}
             onSetDifficulty={(bossId, d) => setBossDifficulty(active.id, bossId, d)}
             onToggleKilled={(bossId) => toggleKilled(active.id, bossId, Date.now())}
-            onToggleSold={(bossId) => toggleSold(active.id, bossId, Date.now())}
-            onMarkAll={(v) => markAll(active.id, v, Date.now())}
+            onSetSold={(bossId, n) => setSold(active.id, bossId, n, Date.now())}
+            onMarkAllKilled={(reset) => markAllKilled(active.id, reset, Date.now())}
+            onClearAll={() => clearAll(active.id, Date.now())}
           />
         )
       )}
@@ -216,29 +213,28 @@ export default function TrackerPage() {
 
 // ---------------- Dashboard ----------------
 
+// A character's RP from killed bosses, split into per-day and per-week rates.
 interface CharRp {
-  daily: number;
-  weekly: number;
-  monthly: number;
-  total: number;
+  perDay: number; // daily-boss RP earned each day
+  perWeek: number; // weekly-boss RP earned each week
+  weeklyTotal: number; // perDay * 7 + perWeek
 }
-function charBossRp(
+function charWeeklyRp(
   ch: Character,
+  characters: Character[],
   killed: Record<string, boolean>,
-  rpOverrides: Record<string, RpOverride>,
-  now: number
+  rpOverrides: Record<string, RpOverride>
 ): CharRp {
-  const days = daysInMonth(now);
-  const thu = thursdaysInMonth(now);
   const rate = (id: string) => rpOverrides[id]?.rp ?? RP_BY_ID[id].defaultRp;
   const enabled = (id: string) => rpOverrides[id]?.on !== false;
-  const d = killedCountByReset(ch, killed, "daily");
-  const w = killedCountByReset(ch, killed, "weekly");
-  const m = killedCountByReset(ch, killed, "monthly");
-  const daily = enabled("daily-bosses") ? rate("daily-bosses") * d * days : 0;
-  const weekly = enabled("weekly-bosses") ? rate("weekly-bosses") * w * thu : 0;
-  const monthly = enabled("monthly-bosses") ? rate("monthly-bosses") * m : 0;
-  return { daily, weekly, monthly, total: daily + weekly + monthly };
+  // claimed counts dedupe shared bosses within the same account+world
+  const perDay = enabled("daily-bosses")
+    ? rpUnitsForChar(ch, characters, killed, "daily") * rate("daily-bosses")
+    : 0;
+  const perWeek = enabled("weekly-bosses")
+    ? rpUnitsForChar(ch, characters, killed, "weekly") * rate("weekly-bosses")
+    : 0;
+  return { perDay, perWeek, weeklyTotal: perDay * 7 + perWeek };
 }
 
 function Dashboard({
@@ -251,7 +247,7 @@ function Dashboard({
 }: {
   characters: Character[];
   killed: Record<string, boolean>;
-  sold: Record<string, boolean>;
+  sold: Record<string, number>;
   reboot: boolean;
   now: number;
   onSelect: (id: string) => void;
@@ -259,14 +255,27 @@ function Dashboard({
   const rpOverrides = useStore((s) => s.rpOverrides);
   let weekly = 0;
   let crystals = 0;
+  let weeklyRp = 0;
   for (const ch of characters) {
     weekly += characterMesos(ch, sold, reboot);
     crystals += characterCrystals(ch, sold);
+    weeklyRp += charWeeklyRp(ch, characters, killed, rpOverrides).weeklyTotal;
+  }
+
+  // group characters by account + world (shared RP pool)
+  const groups: { account: string; world: string; chars: Character[] }[] = [];
+  for (const ch of characters) {
+    let g = groups.find((x) => x.account === ch.account && x.world === ch.world);
+    if (!g) {
+      g = { account: ch.account, world: ch.world, chars: [] };
+      groups.push(g);
+    }
+    g.chars.push(ch);
   }
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryCard label="Weekly meso (sold)" value={formatMesos(weekly)} sub={formatMesosFull(weekly) + " across roster"} accent="var(--green)" />
         <SummaryCard
           label="Crystals sold this week"
@@ -275,41 +284,66 @@ function Dashboard({
           accent="var(--accent-2)"
           warn={crystals > WEEKLY_CRYSTAL_LIMIT}
         />
+        <SummaryCard
+          label="Weekly RP (bosses)"
+          value={weeklyRp.toLocaleString()}
+          sub="Σ (RP/day × 7 + RP/week) per character"
+          accent="var(--accent)"
+        />
         <MonthlyRpCard now={now} />
       </div>
 
-      <div className="space-y-2">
-        <h3 className="text-sm font-bold uppercase tracking-wide text-muted">Characters — click for details</h3>
-        <div className="card divide-y divide-[var(--border)]">
-          {characters.map((c, i) => {
-            const wk = characterMesos(c, sold, reboot);
-            const wkCry = characterWeeklyCrystals(c, sold);
-            const totalCry = characterCrystals(c, sold);
-            const rp = charBossRp(c, killed, rpOverrides, now);
-            return (
-              <button
-                key={c.id}
-                onClick={() => onSelect(c.id)}
-                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-2/40 transition"
-              >
-                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: tabColor(i) }} />
-                <span className="font-bold flex-1 min-w-0 truncate">{c.name}</span>
-                <DashStat label="Meso / wk" value={formatMesos(wk)} accent="var(--green)" />
-                <DashStat
-                  label="Crystals"
-                  value={`${wkCry}/${WEEKLY_PER_CHARACTER_LIMIT}`}
-                  sub={`${totalCry} total`}
-                  warn={wkCry > WEEKLY_PER_CHARACTER_LIMIT}
-                />
-                <DashStat label="RP / mo" value={rp.total.toLocaleString()} accent="var(--accent)" />
-                <span className="text-muted shrink-0">→</span>
-              </button>
-            );
-          })}
-        </div>
+      <div className="space-y-4">
+        <h3 className="text-sm font-bold uppercase tracking-wide text-muted">
+          Characters by account &amp; world — click for details
+        </h3>
+        {groups.map((g) => {
+          const groupRp = g.chars.reduce(
+            (n, c) => n + charWeeklyRp(c, characters, killed, rpOverrides).weeklyTotal,
+            0
+          );
+          return (
+            <div key={`${g.account} ${g.world}`} className="space-y-1">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-xs font-bold">
+                  {g.account} <span className="text-muted">·</span> {g.world}
+                </span>
+                <span className="text-[11px] text-muted" title="Daily-boss RP is shared within this world; weekly/monthly RP is per character">
+                  {groupRp.toLocaleString()} RP/wk
+                </span>
+              </div>
+              <div className="card divide-y divide-[var(--border)]">
+                {g.chars.map((c) => {
+                  const i = characters.indexOf(c);
+                  const wk = characterMesos(c, sold, reboot);
+                  const wkCry = characterWeeklyCrystals(c, sold);
+                  const totalCry = characterCrystals(c, sold);
+                  const wrp = charWeeklyRp(c, characters, killed, rpOverrides);
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => onSelect(c.id)}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-2/40 transition"
+                    >
+                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: tabColor(i) }} />
+                      <span className="font-bold flex-1 min-w-0 truncate">{c.name}</span>
+                      <DashStat label="Meso / wk" value={formatMesos(wk)} accent="var(--green)" />
+                      <DashStat
+                        label="Crystals"
+                        value={`${wkCry}/${WEEKLY_PER_CHARACTER_LIMIT}`}
+                        sub={`${totalCry} total`}
+                        warn={wkCry > WEEKLY_PER_CHARACTER_LIMIT}
+                      />
+                      <DashStat label="RP / wk" value={wrp.weeklyTotal.toLocaleString()} sub={`${wrp.perDay.toLocaleString()}/d · ${wrp.perWeek.toLocaleString()}/wk`} accent="var(--accent)" />
+                      <span className="text-muted shrink-0">→</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
-
-      <RpCalculator now={now} />
     </div>
   );
 }
@@ -333,7 +367,6 @@ function CharacterPanel({
   killed,
   sold,
   reboot,
-  now,
   onRename,
   onRemove,
   onReorder,
@@ -341,16 +374,16 @@ function CharacterPanel({
   onSetParty,
   onSetDifficulty,
   onToggleKilled,
-  onToggleSold,
-  onMarkAll,
+  onSetSold,
+  onMarkAllKilled,
+  onClearAll,
 }: {
   character: Character;
   index: number;
   count: number;
   killed: Record<string, boolean>;
-  sold: Record<string, boolean>;
+  sold: Record<string, number>;
   reboot: boolean;
-  now: number;
   onRename: (name: string) => void;
   onRemove: () => void;
   onReorder: (dir: -1 | 1) => void;
@@ -358,27 +391,66 @@ function CharacterPanel({
   onSetParty: (bossId: string, party: number) => void;
   onSetDifficulty: (bossId: string, difficulty: string) => void;
   onToggleKilled: (bossId: string) => void;
-  onToggleSold: (bossId: string) => void;
-  onMarkAll: (value: boolean) => void;
+  onSetSold: (bossId: string, count: number) => void;
+  onMarkAllKilled: (reset: Reset) => void;
+  onClearAll: () => void;
 }) {
   const rpOverrides = useStore((s) => s.rpOverrides);
+  const allCharacters = useStore((s) => s.characters);
+  const setAccount = useStore((s) => s.setAccount);
+  const setWorld = useStore((s) => s.setWorld);
   const { id, name } = character;
   const weekly = characterMesos(character, sold, reboot);
   const weeklyCrystals = characterWeeklyCrystals(character, sold);
   const totalCrystals = characterCrystals(character, sold);
   const overWeeklyCap = weeklyCrystals > WEEKLY_PER_CHARACTER_LIMIT;
-  const rp = charBossRp(character, killed, rpOverrides, now);
+  const wrp = charWeeklyRp(character, allCharacters, killed, rpOverrides);
+  const accounts = Array.from(new Set(allCharacters.map((c) => c.account)));
 
   return (
     <div className="space-y-5">
       <div className="card p-5">
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <input
-            defaultValue={name}
-            key={name}
-            onBlur={(e) => onRename(e.target.value)}
-            className="bg-transparent font-extrabold text-lg outline-none border-b border-transparent focus:border-border min-w-0"
-          />
+          <div className="min-w-0">
+            <input
+              defaultValue={name}
+              key={name}
+              onBlur={(e) => onRename(e.target.value)}
+              className="bg-transparent font-extrabold text-lg outline-none border-b border-transparent focus:border-border min-w-0 w-44"
+            />
+            <div className="flex items-center gap-3 mt-1.5 text-xs text-muted flex-wrap">
+              <label className="flex items-center gap-1">
+                Account
+                <input
+                  list="account-list"
+                  key={`a${character.account}`}
+                  defaultValue={character.account}
+                  onBlur={(e) => setAccount(id, e.target.value)}
+                  className="bg-surface-2 rounded px-1.5 py-0.5 text-foreground outline-none w-28 border border-border focus:border-[var(--accent-2)]"
+                />
+              </label>
+              <label className="flex items-center gap-1">
+                World
+                <input
+                  list="world-list"
+                  key={`w${character.world}`}
+                  defaultValue={character.world}
+                  onBlur={(e) => setWorld(id, e.target.value)}
+                  className="bg-surface-2 rounded px-1.5 py-0.5 text-foreground outline-none w-28 border border-border focus:border-[var(--accent-2)]"
+                />
+              </label>
+            </div>
+            <datalist id="account-list">
+              {accounts.map((a) => (
+                <option key={a} value={a} />
+              ))}
+            </datalist>
+            <datalist id="world-list">
+              {WORLDS.map((w) => (
+                <option key={w} value={w} />
+              ))}
+            </datalist>
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span
               className={`text-xs font-bold rounded-lg px-2.5 py-2 border ${
@@ -396,24 +468,29 @@ function CharacterPanel({
         </div>
 
         {/* This character's weekly stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4">
           <RpStat label="Meso / week (sold)" value={formatMesos(weekly)} sub={formatMesosFull(weekly)} accent="var(--green)" />
           <RpStat label="Crystals sold" value={`${weeklyCrystals}/${WEEKLY_PER_CHARACTER_LIMIT} wk`} sub={`${totalCrystals} total`} accent={overWeeklyCap ? "#f43f5e" : undefined} />
-          <RpStat label="RP / month (bosses)" value={rp.total.toLocaleString()} sub={`D ${rp.daily.toLocaleString()} · W ${rp.weekly.toLocaleString()} · M ${rp.monthly.toLocaleString()}`} accent="var(--accent)" />
+          <RpStat label="RP / day" value={wrp.perDay.toLocaleString()} sub="daily bosses killed" accent="var(--accent)" />
+          <RpStat label="RP / week" value={wrp.perWeek.toLocaleString()} sub="weekly bosses killed" accent="var(--accent)" />
         </div>
         <p className="text-[11px] text-muted mt-1.5">
-          RP is per world — a boss also killed on another character only earns RP once toward your account total.
+          Weekly RP for this character = RP/day × 7 + RP/week ={" "}
+          <span className="text-foreground">{wrp.weeklyTotal.toLocaleString()}</span>. Daily-boss RP is
+          shared in <span className="text-foreground">{character.account} · {character.world}</span>{" "}
+          (only the first character claims it); weekly &amp; monthly boss RP is earned per character.
         </p>
 
         <div className="flex items-center gap-2 mt-4 flex-wrap">
-          <button className="btn text-sm" onClick={() => onMarkAll(true)}>Mark all killed + sold</button>
-          <button className="btn text-sm" onClick={() => onMarkAll(false)}>Clear all</button>
+          <button className="btn text-sm" onClick={() => onMarkAllKilled("daily")}>Mark all dailies killed</button>
+          <button className="btn text-sm" onClick={() => onMarkAllKilled("weekly")}>Mark all weeklies killed</button>
+          <button className="btn text-sm" onClick={onClearAll}>Clear all</button>
         </div>
       </div>
 
       {RESET_ORDER.map((reset) => {
         const list = BOSSES.filter((b) => b.reset === reset).sort(
-          (a, b) => soloMesos(a.id, diffOf(character, a.id)) - soloMesos(b.id, diffOf(character, b.id))
+          (a, b) => sortPrice(a) - sortPrice(b)
         );
         if (list.length === 0) return null;
         const sells = sellsPerCycle(reset);
@@ -421,51 +498,61 @@ function CharacterPanel({
           <div key={reset} className="space-y-2">
             <h3 className="text-sm font-bold uppercase tracking-wide text-muted">
               {RESET_LABEL[reset]} Bosses
-              {reset === "daily" && <span className="text-muted/70 font-normal normal-case"> · counts as 7×/week</span>}
+              {reset === "daily" && <span className="text-muted/70 font-normal normal-case"> · set how many you sell (up to 7/week)</span>}
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {list.map((boss) => {
                 const difficulty = diffOf(character, boss.id);
                 const per = sellValue(character, boss.id, reboot);
-                const weekVal = per * sells;
                 const maxParty = maxPartyFor(boss.id, difficulty);
                 const party = character.bosses[boss.id]?.party ?? 1;
                 const wasKilled = isKilled(killed, id, boss.id);
-                const wasSold = isSold(sold, id, boss.id);
+                const soldN = soldCount(sold, id, boss.id);
                 return (
                   <div key={boss.id} className="card p-3 flex flex-col gap-2">
                     <div className="flex items-center gap-2">
                       <BossIcon id={boss.id} name={boss.name} small />
                       <div className="min-w-0 flex-1">
                         <div className="font-bold text-sm truncate">{boss.name}</div>
-                        <div className="text-[11px] text-accent">
-                          {formatMesos(per)}
-                          {sells > 1 ? ` ×${sells} = ${formatMesos(weekVal)}` : ""}
+                        <div className="text-[11px]">
+                          {boss.rpOnly ? (
+                            <span className="text-muted">RP only · no crystal</span>
+                          ) : (
+                            <>
+                              <span className="text-accent">{formatMesos(per)}</span>
+                              <span className="text-muted">/crystal</span>
+                              {soldN > 0 && (
+                                <span style={{ color: "var(--green)" }}> · sold {formatMesos(per * soldN)}</span>
+                              )}
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-1">
-                      {boss.difficulties.map((d) => {
-                        const isSel = difficulty === d.difficulty;
-                        const dc = DIFFICULTY_COLOR[d.difficulty] ?? "#888";
-                        return (
-                          <button
-                            key={d.difficulty}
-                            onClick={() => onSetDifficulty(boss.id, d.difficulty)}
-                            className="text-[11px] font-bold rounded px-1.5 py-0.5 border transition"
-                            style={{
-                              color: isSel ? "#0b0f1a" : dc,
-                              background: isSel ? dc : "transparent",
-                              borderColor: `${dc}66`,
-                            }}
-                            title={`${formatMesosFull(d.mesos)} solo`}
-                          >
-                            {d.difficulty}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    {!boss.rpOnly && (
+                      <div className="flex flex-wrap gap-1">
+                        {boss.difficulties.map((d) => {
+                          const isSel = difficulty === d.difficulty;
+                          const dc = DIFFICULTY_COLOR[d.difficulty] ?? "#888";
+                          return (
+                            <button
+                              key={d.difficulty}
+                              onClick={() => onSetDifficulty(boss.id, d.difficulty)}
+                              className="text-[11px] font-bold rounded px-1.5 py-0.5 border transition"
+                              style={{
+                                color: isSel ? "#0b0f1a" : dc,
+                                background: isSel ? dc : "transparent",
+                                borderColor: `${dc}66`,
+                              }}
+                              title={`${formatMesosFull(d.mesos)} solo`}
+                            >
+                              {d.difficulty}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-1.5 mt-auto">
                       <button
@@ -479,18 +566,46 @@ function CharacterPanel({
                       >
                         {wasKilled ? "⚔ Killed" : "Kill"}
                       </button>
-                      <button
-                        onClick={() => onToggleSold(boss.id)}
-                        className={`flex-1 text-xs font-bold rounded-md py-1.5 border transition ${
-                          wasSold
-                            ? "bg-green-500 border-green-500 text-[#06281c]"
-                            : "border-border bg-surface-2 text-muted hover:text-foreground"
-                        }`}
-                        title="Sold crystals — earns mesos"
-                      >
-                        {wasSold ? "💰 Sold" : "Sell"}
-                      </button>
-                      {maxParty > 1 && (
+                      {boss.rpOnly ? null : sells > 1 ? (
+                        <div
+                          className="flex items-center rounded-md border border-border bg-surface-2 shrink-0"
+                          title="Crystals sold this week (drives mesos)"
+                        >
+                          <button
+                            className="px-1.5 py-1 text-muted hover:text-foreground disabled:opacity-30"
+                            onClick={() => onSetSold(boss.id, soldN - 1)}
+                            disabled={soldN <= 0}
+                          >
+                            −
+                          </button>
+                          <span
+                            className="w-12 text-center text-[11px] font-bold tabular-nums"
+                            style={soldN > 0 ? { color: "var(--green)" } : undefined}
+                          >
+                            💰{soldN}/{sells}
+                          </span>
+                          <button
+                            className="px-1.5 py-1 text-muted hover:text-foreground disabled:opacity-30"
+                            onClick={() => onSetSold(boss.id, soldN + 1)}
+                            disabled={soldN >= sells}
+                          >
+                            +
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => onSetSold(boss.id, soldN > 0 ? 0 : 1)}
+                          className={`flex-1 text-xs font-bold rounded-md py-1.5 border transition ${
+                            soldN > 0
+                              ? "bg-green-500 border-green-500 text-[#06281c]"
+                              : "border-border bg-surface-2 text-muted hover:text-foreground"
+                          }`}
+                          title="Sold crystal — earns mesos"
+                        >
+                          {soldN > 0 ? "💰 Sold" : "Sell"}
+                        </button>
+                      )}
+                      {!boss.rpOnly && maxParty > 1 && (
                         <Stepper
                           value={party}
                           min={1}
@@ -540,7 +655,7 @@ function effectiveRpOverrides(
 ): Record<string, RpOverride> {
   const withQty = (id: string, reset: Reset) => {
     const o = rpOverrides[id] ?? {};
-    return { ...o, qty: o.qty ?? distinctKilledByReset(characters, killed, reset) };
+    return { ...o, qty: o.qty ?? rpBossCount(characters, killed, reset) };
   };
   return {
     ...rpOverrides,
@@ -548,112 +663,6 @@ function effectiveRpOverrides(
     "weekly-bosses": withQty("weekly-bosses", "weekly"),
     "monthly-bosses": withQty("monthly-bosses", "monthly"),
   };
-}
-
-function RpCalculator({ now }: { now: number }) {
-  const rpOverrides = useStore((s) => s.rpOverrides);
-  const mvpTier = useStore((s) => s.mvpTier);
-  const characters = useStore((s) => s.characters);
-  const killed = useStore((s) => s.killed);
-  const setRpOverride = useStore((s) => s.setRpOverride);
-  const setMvpTier = useStore((s) => s.setMvpTier);
-  const [open, setOpen] = useState(false);
-
-  const eff = effectiveRpOverrides(rpOverrides, characters, killed);
-  const res = computeMonthlyRp(eff, mvpTier, now);
-
-  const groups: { group: RpGroup; label: string; freq: string }[] = [
-    { group: "daily", label: "Daily", freq: `× ${res.days} days` },
-    { group: "weekly", label: "Weekly", freq: `× ${res.thursdays} Thursdays` },
-    { group: "monthly", label: "Monthly", freq: "× 1" },
-  ];
-
-  return (
-    <div className="card overflow-hidden">
-      <button className="w-full flex items-center justify-between px-5 py-4 hover:bg-surface-2/50 transition" onClick={() => setOpen((o) => !o)}>
-        <div className="text-left">
-          <h2 className="font-extrabold text-lg">RP Calculator</h2>
-          <p className="text-xs text-muted mt-0.5">
-            Monthly Reward Points — daily × {res.days}, weekly × {res.thursdays}, capped at {MONTHLY_RP_CAP.toLocaleString()}.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xl font-extrabold" style={{ color: res.capped ? "#f43f5e" : "var(--accent)" }}>
-            {res.total.toLocaleString("en-US")} RP
-          </span>
-          <span className="text-muted">{open ? "▴" : "▾"}</span>
-        </div>
-      </button>
-
-      {open && (
-        <div className="border-t border-border p-5 space-y-5">
-          <div className="flex items-center gap-3 flex-wrap">
-            <label className="label">MVP tier</label>
-            <select className="select w-auto" value={mvpTier} onChange={(e) => setMvpTier(e.target.value as MvpTier)}>
-              {MVP_TIERS.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-            <span className="text-xs text-muted">Affects Fairy Bros gifts (Bronze+ and Silver+).</span>
-          </div>
-
-          {groups.map(({ group, label, freq }) => {
-            const acts = RP_ACTIVITIES.filter((a) => a.group === group);
-            return (
-              <div key={group} className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wide text-muted">{label}</h3>
-                  <span className="text-xs text-muted">{freq}</span>
-                </div>
-                <div className="card divide-y divide-[var(--border)]">
-                  {acts.map((a) => {
-                    const o = eff[a.id] ?? {};
-                    const on = o.on !== false;
-                    const mvp = mvpAdjustedRp(a, mvpTier);
-                    const rp = o.rp ?? (mvp != null ? mvp : a.defaultRp);
-                    const qty = o.qty ?? a.defaultQty;
-                    const contribution = on ? rp * qty : 0;
-                    return (
-                      <div key={a.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                        <input type="checkbox" checked={on} onChange={(e) => setRpOverride(a.id, { on: e.target.checked })} className="accent-indigo-500 h-4 w-4 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <div className={`font-semibold truncate ${on ? "" : "text-muted line-through"}`} title={a.note}>{a.label}</div>
-                          {a.note && <div className="text-[11px] text-muted truncate">{a.note}</div>}
-                        </div>
-                        <label className="flex items-center gap-1 text-xs text-muted">
-                          RP
-                          <input type="number" min={0} value={rp} onChange={(e) => setRpOverride(a.id, { rp: Number(e.target.value) })} className="input w-20 py-1" />
-                        </label>
-                        {a.qtyLabel && (
-                          <label className="flex items-center gap-1 text-xs text-muted">
-                            {a.qtyLabel}
-                            <input type="number" min={0} value={qty} onChange={(e) => setRpOverride(a.id, { qty: Number(e.target.value) })} className="input w-16 py-1" />
-                          </label>
-                        )}
-                        <span className="w-24 text-right font-bold tabular-nums">{contribution.toLocaleString("en-US")}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          <div className="grid gap-3 sm:grid-cols-4 pt-1">
-            <RpStat label={`Daily (×${res.days})`} value={(res.daily * res.days).toLocaleString()} sub={`${res.daily.toLocaleString()}/day`} />
-            <RpStat label={`Weekly (×${res.thursdays})`} value={(res.weekly * res.thursdays).toLocaleString()} sub={`${res.weekly.toLocaleString()}/wk`} />
-            <RpStat label="Monthly" value={res.monthly.toLocaleString()} sub="one-time" />
-            <RpStat label="Monthly total" value={res.total.toLocaleString()} sub={res.capped ? `over cap by ${(res.rawMonthly - MONTHLY_RP_CAP).toLocaleString()}` : `of ${MONTHLY_RP_CAP.toLocaleString()}`} accent={res.capped ? "#f43f5e" : "var(--accent)"} />
-          </div>
-          <p className="text-[11px] text-muted">
-            RP is earned <span className="text-foreground">per world</span> — a boss killed on multiple
-            characters only grants its RP once, so boss qtys count distinct bosses killed across your
-            roster. RP amounts are editable best-effort defaults; adjust any to match in-game values.
-          </p>
-        </div>
-      )}
-    </div>
-  );
 }
 
 function RpStat({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: string }) {

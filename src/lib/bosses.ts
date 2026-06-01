@@ -18,6 +18,7 @@ export interface Boss {
   name: string;
   reset: Reset;
   difficulties: BossDifficulty[]; // ordered easiest -> hardest
+  rpOnly?: boolean; // gives RP on kill but drops no sellable crystal (e.g. Gollux)
 }
 
 export const DIFFICULTY_COLOR: Record<string, string> = {
@@ -33,6 +34,13 @@ export const DIFFICULTY_ORDER = ["Easy", "Normal", "Hard", "Chaos", "Extreme"];
 
 export const BOSSES: Boss[] = [
   // ---------------- Daily ----------------
+  {
+    id: "gollux",
+    name: "Gollux",
+    reset: "daily",
+    rpOnly: true,
+    difficulties: [{ difficulty: "Normal", mesos: 0 }],
+  },
   {
     id: "zakum",
     name: "Zakum",
@@ -391,15 +399,28 @@ export function maxPartyFor(bossId: string, difficulty: string): number {
   return difficultyFor(bossId, difficulty)?.maxParty ?? 6;
 }
 
-// Default selected difficulty for a boss = its hardest available tier.
-export function hardestDifficulty(bossId: string): string {
+// Default selected difficulty for a boss = its easiest (cheapest) tier.
+export function defaultDifficulty(bossId: string): string {
   const b = BOSS_BY_ID[bossId];
-  return b ? b.difficulties[b.difficulties.length - 1].difficulty : "Normal";
+  return b ? b.difficulties[0].difficulty : "Normal";
 }
 
 // Sells/kills per week for a reset cadence: dailies up to 7, weekly/monthly once.
 export function sellsPerCycle(reset: Reset): number {
   return reset === "daily" ? 7 : 1;
+}
+
+// Fixed price used to order bosses in the grid (independent of the selected difficulty,
+// so changing a boss's difficulty never reshuffles the list):
+//   daily   -> most expensive (hardest) crystal price
+//   weekly/monthly -> Normal price if it exists, else the cheapest tier
+export function sortPrice(boss: Boss): number {
+  if (boss.rpOnly) return Number.POSITIVE_INFINITY; // RP-only bosses (Gollux) sort last
+  if (boss.reset === "daily") {
+    return boss.difficulties[boss.difficulties.length - 1].mesos;
+  }
+  const normal = boss.difficulties.find((d) => d.difficulty === "Normal");
+  return normal ? normal.mesos : boss.difficulties[0].mesos;
 }
 
 // Per-member crystal value for a given party size and world multiplier.

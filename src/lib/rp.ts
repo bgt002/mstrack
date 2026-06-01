@@ -26,13 +26,13 @@ export interface RpActivity {
   mvpScaled?: "day7" | "day21";
 }
 
-// MVP membership tiers (affect Fairy Bros gift RP).
+// MVP membership tiers (retained for type/store stability; no longer affects tracked RP).
 export const MVP_TIERS = ["None", "Bronze", "Silver", "Gold", "Diamond", "Red"] as const;
 export type MvpTier = (typeof MVP_TIERS)[number];
-const tierRank = (t: MvpTier) => MVP_TIERS.indexOf(t);
 
+// Only boss RP is tracked. Daily-boss RP is shared per account+world (deduped); weekly &
+// monthly boss RP is earned per character (you split clears across days).
 export const RP_ACTIVITIES: RpActivity[] = [
-  // ---- Daily (x days in month) ----
   {
     id: "daily-bosses",
     label: "Daily Bosses",
@@ -40,61 +40,8 @@ export const RP_ACTIVITIES: RpActivity[] = [
     defaultRp: 30,
     defaultQty: 0,
     qtyLabel: "# daily bosses",
-    note: "30 per boss, once a day per world (excludes Balrog & Julieta). Qty = distinct daily bosses across your roster — the same boss on multiple characters only counts once.",
+    note: "30 per boss, once a day per world (excludes Balrog & Julieta). Shared per account+world — the same daily boss on multiple characters only counts once.",
   },
-  {
-    id: "monster-collection",
-    label: "Monster Collection",
-    group: "daily",
-    defaultRp: 10,
-    defaultQty: 1,
-    qtyLabel: "redeems/day",
-    note: "Variable — higher-quality boxes give more (less than proportional). Editable.",
-  },
-  {
-    id: "maple-tour",
-    label: "Maple Tour",
-    group: "daily",
-    defaultRp: 100,
-    defaultQty: 1,
-    note: "Daily Maple Tour clear.",
-  },
-  { id: "exploration-1", label: "Exploration 1", group: "daily", defaultRp: 130, defaultQty: 1 },
-  { id: "exploration-2", label: "Exploration 2", group: "daily", defaultRp: 130, defaultQty: 1 },
-  { id: "exploration-3", label: "Exploration 3", group: "daily", defaultRp: 40, defaultQty: 1 },
-  {
-    id: "msm",
-    label: "MapleStory M — PC daily tasks",
-    group: "daily",
-    defaultRp: 100,
-    defaultQty: 5,
-    qtyLabel: "missions (max 5)",
-    note: "100 per mission, up to 5 missions per day. Requires a linked MSM account.",
-  },
-  { id: "use-potions", label: "Use 50 potions", group: "daily", defaultRp: 100, defaultQty: 1 },
-  { id: "hunt-monsters", label: "Hunt 300 monsters", group: "daily", defaultRp: 100, defaultQty: 1 },
-  { id: "earn-mesos", label: "Earn 300,000 mesos", group: "daily", defaultRp: 100, defaultQty: 1 },
-  { id: "obtain-items", label: "Obtain 10 items", group: "daily", defaultRp: 100, defaultQty: 1 },
-  { id: "fever-buff", label: "Use Fever Buff 5x", group: "daily", defaultRp: 100, defaultQty: 1 },
-  {
-    id: "sudden-missions",
-    label: "Sudden Missions",
-    group: "daily",
-    defaultRp: 500,
-    defaultQty: 0,
-    qtyLabel: "expected/day",
-    note: "Low chance to appear for 500 mileage. Off by default (RNG) — set an expected count if you want to estimate it.",
-  },
-  {
-    id: "other-daily",
-    label: "Other daily RP",
-    group: "daily",
-    defaultRp: 0,
-    defaultQty: 1,
-    note: "Anything else you earn each day.",
-  },
-
-  // ---- Weekly (x Thursdays in month) ----
   {
     id: "weekly-bosses",
     label: "Weekly Bosses",
@@ -102,18 +49,8 @@ export const RP_ACTIVITIES: RpActivity[] = [
     defaultRp: 200,
     defaultQty: 0,
     qtyLabel: "# weekly bosses",
-    note: "200 per weekly boss, once a week per world. Qty = distinct weekly bosses across your roster — the same boss on multiple characters only counts once.",
+    note: "200 per weekly boss. Earned per character (cleared on separate days), so it stacks across characters in the same account+world.",
   },
-  {
-    id: "other-weekly",
-    label: "Other weekly RP",
-    group: "weekly",
-    defaultRp: 0,
-    defaultQty: 1,
-    note: "Anything else you earn each week.",
-  },
-
-  // ---- Monthly (x1) ----
   {
     id: "monthly-bosses",
     label: "Monthly Bosses",
@@ -121,42 +58,16 @@ export const RP_ACTIVITIES: RpActivity[] = [
     defaultRp: 1000,
     defaultQty: 0,
     qtyLabel: "# monthly bosses",
-    note: "1,000 per monthly boss, once a month per world (e.g. Black Mage). Qty = distinct monthly bosses across your roster.",
-  },
-  {
-    id: "fairy-day7",
-    label: "Fairy Bros — Day 7 gift",
-    group: "monthly",
-    defaultRp: 500,
-    defaultQty: 1,
-    mvpScaled: "day7",
-    note: "500 RP base, 1000 RP for MVP Bronze I or higher. Requires logging in 7 days.",
-  },
-  {
-    id: "fairy-day21",
-    label: "Fairy Bros — Day 21 gift",
-    group: "monthly",
-    defaultRp: 1000,
-    defaultQty: 1,
-    mvpScaled: "day21",
-    note: "1000 RP base, 2000 RP for MVP Silver or higher. Requires logging in 21 days.",
-  },
-  {
-    id: "other-monthly",
-    label: "Other monthly RP",
-    group: "monthly",
-    defaultRp: 0,
-    defaultQty: 1,
-    note: "Anything else you earn once a month.",
+    note: "1,000 per monthly boss (e.g. Black Mage). Earned per character.",
   },
 ];
 
 export const RP_BY_ID = Object.fromEntries(RP_ACTIVITIES.map((a) => [a.id, a]));
 
-// MVP-tier override for Fairy Bros RP, if applicable.
+// No MVP-scaled activities remain; kept for API stability.
 export function mvpAdjustedRp(activity: RpActivity, tier: MvpTier): number | null {
-  if (activity.mvpScaled === "day7") return tierRank(tier) >= tierRank("Bronze") ? 1000 : 500;
-  if (activity.mvpScaled === "day21") return tierRank(tier) >= tierRank("Silver") ? 2000 : 1000;
+  void activity;
+  void tier;
   return null;
 }
 
