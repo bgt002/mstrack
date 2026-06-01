@@ -63,6 +63,7 @@ export default function TrackerPage() {
   const renameCharacter = useStore((s) => s.renameCharacter);
   const removeCharacter = useStore((s) => s.removeCharacter);
   const reorderCharacter = useStore((s) => s.reorderCharacter);
+  const duplicateCharacter = useStore((s) => s.duplicateCharacter);
   const setBossDifficulty = useStore((s) => s.setBossDifficulty);
   const setBossParty = useStore((s) => s.setBossParty);
   const unsetBoss = useStore((s) => s.unsetBoss);
@@ -167,7 +168,7 @@ export default function TrackerPage() {
         {characters.map((c, i) => {
           const color = tabColor(i);
           const done = Object.keys(c.bosses).filter(
-            (b) => bossCount(counts, c.id, b) >= maxKills(BOSS_BY_ID[b].reset)
+            (b) => BOSS_BY_ID[b] && bossCount(counts, c.id, b) >= maxKills(BOSS_BY_ID[b].reset)
           ).length;
           const total = Object.keys(c.bosses).length;
           const isActive = c.id === activeId;
@@ -231,6 +232,10 @@ export default function TrackerPage() {
             if (confirm(`Delete ${active.name}?`)) removeCharacter(active.id);
           }}
           onReorder={(dir) => reorderCharacter(active.id, dir)}
+          onDuplicate={() => {
+            duplicateCharacter(active.id);
+            setSelectedId(null); // fall through to keep selection sensible
+          }}
           onSetParty={(bossId, p) => setBossParty(active.id, bossId, p)}
           onSetDifficulty={(bossId, d) => setBossDifficulty(active.id, bossId, d)}
           onUnset={(bossId) => unsetBoss(active.id, bossId)}
@@ -264,6 +269,7 @@ function CharacterPanel({
   onRename,
   onRemove,
   onReorder,
+  onDuplicate,
   onSetParty,
   onSetDifficulty,
   onUnset,
@@ -281,6 +287,7 @@ function CharacterPanel({
   onRename: (name: string) => void;
   onRemove: () => void;
   onReorder: (dir: -1 | 1) => void;
+  onDuplicate: () => void;
   onSetParty: (bossId: string, party: number) => void;
   onSetDifficulty: (bossId: string, difficulty: string) => void;
   onUnset: (bossId: string) => void;
@@ -324,6 +331,7 @@ function CharacterPanel({
             </span>
             <button className="btn text-xs px-2.5" disabled={index === 0} onClick={() => onReorder(-1)} title="Move left">←</button>
             <button className="btn text-xs px-2.5" disabled={index === count - 1} onClick={() => onReorder(1)} title="Move right">→</button>
+            <button className="btn text-xs px-2.5" onClick={onDuplicate} title="Duplicate this character (copies bosses + kill counts)">⧉ Duplicate</button>
             <button className="btn btn-danger text-xs px-2.5" onClick={onRemove}>Delete</button>
           </div>
         </div>

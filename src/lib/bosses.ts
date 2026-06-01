@@ -61,12 +61,6 @@ export const BOSSES: Boss[] = [
     ],
   },
   {
-    id: "yakuza-boss",
-    name: "Yakuza Boss",
-    reset: "daily",
-    difficulties: [{ difficulty: "Normal", mesos: 722_000 }],
-  },
-  {
     id: "hilla",
     name: "Hilla",
     reset: "daily",
@@ -82,12 +76,6 @@ export const BOSSES: Boss[] = [
     ],
   },
   {
-    id: "gigatoad",
-    name: "Gigatoad",
-    reset: "daily",
-    difficulties: [{ difficulty: "Normal", mesos: 882_000 }],
-  },
-  {
     id: "horntail",
     name: "Horntail",
     reset: "daily",
@@ -96,12 +84,6 @@ export const BOSSES: Boss[] = [
       { difficulty: "Normal", mesos: 1_012_500 },
       { difficulty: "Chaos", mesos: 1_352_000 },
     ],
-  },
-  {
-    id: "frenzied-gigatoad",
-    name: "Frenzied Gigatoad",
-    reset: "daily",
-    difficulties: [{ difficulty: "Hard", mesos: 1_153_000 }],
   },
   {
     id: "pierre",
@@ -383,6 +365,12 @@ export const BOSSES: Boss[] = [
     ],
   },
 ];
+
+// Order every boss within its reset group cheapest-first (difficulties are stored
+// easiest -> hardest, so difficulties[0] is the lowest crystal value).
+BOSSES.sort(
+  (a, b) => a.difficulties[0].mesos - b.difficulties[0].mesos || a.name.localeCompare(b.name)
+);
 
 export const BOSS_BY_ID = Object.fromEntries(BOSSES.map((b) => [b.id, b]));
 

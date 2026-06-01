@@ -25,8 +25,8 @@ export interface Character {
   bosses: Record<string, BossSel>;
 }
 
-// counts/clears are keyed by `${characterId}:${bossId}`.
-// `counts[key]` = times killed this cycle (drives meso income + crystal totals).
+// counts are keyed by `${characterId}:${bossId}` = kills this cycle
+// (drives meso income + crystal totals).
 export interface RosterState {
   characters: Character[];
   counts: Record<string, number>;
@@ -42,6 +42,7 @@ export interface RosterState {
   renameCharacter: (id: string, name: string) => void;
   removeCharacter: (id: string) => void;
   reorderCharacter: (id: string, dir: -1 | 1) => void;
+  duplicateCharacter: (id: string) => void;
 
   setBossDifficulty: (charId: string, bossId: string, difficulty: string) => void;
   setBossParty: (charId: string, bossId: string, party: number) => void;
@@ -101,10 +102,7 @@ export const useStore = create<RosterState>()(
           Object.keys(counts).forEach((k) => {
             if (k.startsWith(`${id}:`)) delete counts[k];
           });
-          return {
-            characters: s.characters.filter((c) => c.id !== id),
-            counts,
-          };
+          return { characters: s.characters.filter((c) => c.id !== id), counts };
         }),
 
       reorderCharacter: (id, dir) =>
@@ -117,6 +115,32 @@ export const useStore = create<RosterState>()(
           return { characters: next };
         }),
 
+      // Duplicate a character: copies its tracked bosses (difficulty + party) AND its
+      // current kill counts, remapped to the new character id so they stay independent.
+      duplicateCharacter: (id) =>
+        set((s) => {
+          const idx = s.characters.findIndex((c) => c.id === id);
+          if (idx < 0) return s;
+          const src = s.characters[idx];
+          const newId = uid();
+          const dup: Character = {
+            id: newId,
+            name: `${src.name} (copy)`,
+            bosses: Object.fromEntries(
+              Object.entries(src.bosses).map(([bid, sel]) => [bid, { ...sel }])
+            ),
+          };
+          const counts = { ...s.counts };
+          for (const [k, v] of Object.entries(s.counts)) {
+            if (k.startsWith(`${id}:`)) {
+              counts[`${newId}:${k.slice(k.indexOf(":") + 1)}`] = v;
+            }
+          }
+          const characters = [...s.characters];
+          characters.splice(idx + 1, 0, dup);
+          return { characters, counts };
+        }),
+
       setBossDifficulty: (charId, bossId, difficulty) =>
         set((s) => ({
           characters: s.characters.map((ch) => {
@@ -126,10 +150,7 @@ export const useStore = create<RosterState>()(
               ...ch,
               bosses: {
                 ...ch.bosses,
-                [bossId]: {
-                  difficulty,
-                  party: clampParty(bossId, difficulty, prevParty),
-                },
+                [bossId]: { difficulty, party: clampParty(bossId, difficulty, prevParty) },
               },
             };
           }),
@@ -243,7 +264,7 @@ export const useStore = create<RosterState>()(
     }),
     {
       name: "mapletracker-roster",
-      version: 4,
+      version: 6,
       partialize: (s) => ({
         characters: s.characters,
         counts: s.counts,
@@ -255,11 +276,21 @@ export const useStore = create<RosterState>()(
       }),
       migrate: (persisted, version) => {
         const now = Date.now();
-        const s = persisted as Record<string, unknown> & {
+        let s = persisted as Record<string, unknown> & {
           characters?: Array<{ id?: string; name: string; bosses?: Record<string, unknown> }>;
+          pages?: Array<Record<string, unknown>>;
+          activePageId?: string;
         };
+
+        // v5 wrapped everything into pages; unwrap back to the active page (flat model).
+        if (s.pages) {
+          const active =
+            s.pages.find((p) => p.id === s.activePageId) ?? s.pages[0] ?? {};
+          s = { ...(active as typeof s) };
+        }
+
         // v1 -> bosses were difficulty strings.
-        if (version < 2 && s?.characters) {
+        if (version < 2 && s.characters) {
           s.characters = s.characters.map((ch) => ({
             ...ch,
             bosses: Object.fromEntries(
@@ -283,19 +314,33 @@ export const useStore = create<RosterState>()(
           const cleared = (s.cleared ?? {}) as Record<string, unknown>;
           const counts: Record<string, number> = {};
           for (const [k, v] of Object.entries(cleared)) {
-            if (v) {
-              const bossId = k.slice(k.indexOf(":") + 1);
-              counts[k] = maxKillsOf(bossId);
-            }
+            if (v) counts[k] = maxKillsOf(k.slice(k.indexOf(":") + 1));
           }
           s.counts = counts;
           delete s.cleared;
           delete s.weeklySold;
-          s.weekAnchor = weekStartUTC(now);
-          s.monthAnchor = monthStartUTC(now);
-          s.rpOverrides = {};
-          s.mvpTier = "None";
         }
+
+        // Normalize + prune any references to removed/unknown bosses.
+        s.characters = ((s.characters ?? []) as Character[]).map((ch) => ({
+          id: ch.id ?? uid(),
+          name: ch.name,
+          bosses: Object.fromEntries(
+            Object.entries(ch.bosses ?? {}).filter(([bid]) => bid in BOSS_BY_ID)
+          ) as Record<string, BossSel>,
+        }));
+        const counts: Record<string, number> = {};
+        for (const [k, v] of Object.entries((s.counts ?? {}) as Record<string, number>)) {
+          if (k.slice(k.indexOf(":") + 1) in BOSS_BY_ID) counts[k] = v;
+        }
+        s.counts = counts;
+        s.weekAnchor = (s.weekAnchor as number) ?? weekStartUTC(now);
+        s.monthAnchor = (s.monthAnchor as number) ?? monthStartUTC(now);
+        s.reboot = (s.reboot as boolean) ?? false;
+        s.rpOverrides = (s.rpOverrides as Record<string, RpOverride>) ?? {};
+        s.mvpTier = (s.mvpTier as MvpTier) ?? "None";
+        delete s.pages;
+        delete s.activePageId;
         return s as unknown as RosterState;
       },
       onRehydrateStorage: () => (state) => {
@@ -338,10 +383,7 @@ export function characterMesos(
 }
 
 // Max possible weekly meso if every tracked boss is fully killed.
-export function characterPotential(
-  ch: Character,
-  reboot: boolean
-): number {
+export function characterPotential(ch: Character, reboot: boolean): number {
   return Object.entries(ch.bosses).reduce((sum, [bossId, sel]) => {
     return sum + selMesos(sel, bossId, reboot) * maxKills(resetOf(bossId));
   }, 0);
@@ -360,8 +402,7 @@ export function characterWeeklyCrystals(ch: Character, counts: Record<string, nu
   );
 }
 
-// Count of bosses of a given reset type tracked across the whole roster
-// (default qty for the per-reset boss RP lines).
+// Count of bosses of a given reset type tracked across the whole roster.
 export function totalBossesTrackedByReset(
   characters: Character[],
   reset: "daily" | "weekly" | "monthly"

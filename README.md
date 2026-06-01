@@ -8,7 +8,9 @@ Everything lives on one page (`/`). All data is stored locally in your browser
 
 ## Features
 
-- **Characters, inline** — add characters by name as tabs; rename, reorder, delete. No roster page.
+- **Characters, inline** — add characters by name as tabs; rename, reorder, **duplicate**, delete.
+  Duplicating copies the character's tracked bosses and current kill counts into an independent copy.
+- Bosses are listed **cheapest-first** within each Daily/Weekly/Monthly section.
 - **Per-character boss checklist** — click **+ Add boss** to pick the bosses each character runs
   (difficulty Easy → Extreme), then check them off. Boss icons from [maplestory.io](https://maplestory.io).
 - **GMS crystal meso values** per boss/difficulty, from the MapleStory Wiki.
