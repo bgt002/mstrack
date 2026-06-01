@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { bossImage } from "@/lib/bossImages";
 import {
@@ -24,13 +24,15 @@ import {
   formatMesosFull,
   maxPartyFor,
   maxKills,
+  soloMesos,
   WEEKLY_CRYSTAL_LIMIT,
   WEEKLY_PER_CHARACTER_LIMIT,
   type Reset,
 } from "@/lib/bosses";
-import { nextResetLabel } from "@/lib/reset";
+import { nextResetLabel, daysInMonth, thursdaysInMonth } from "@/lib/reset";
 import {
   RP_ACTIVITIES,
+  RP_BY_ID,
   MVP_TIERS,
   MONTHLY_RP_CAP,
   computeMonthlyRp,
@@ -72,7 +74,8 @@ export default function TrackerPage() {
   const setAllForCharacter = useStore((s) => s.setAllForCharacter);
   const resetByType = useStore((s) => s.resetByType);
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // view = "dashboard" or a character id
+  const [view, setView] = useState<string>("dashboard");
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -90,21 +93,9 @@ export default function TrackerPage() {
     };
   }, []);
 
-  const activeId = characters.some((c) => c.id === selectedId)
-    ? selectedId
-    : characters[0]?.id ?? null;
-  const activeIdx = characters.findIndex((c) => c.id === activeId);
-  const active = characters[activeIdx] ?? null;
-
-  const totals = useMemo(() => {
-    let weekly = 0;
-    let crystals = 0;
-    for (const ch of characters) {
-      weekly += characterMesos(ch, counts, reboot);
-      crystals += characterCrystals(ch, counts);
-    }
-    return { weekly, crystals };
-  }, [characters, counts, reboot]);
+  const activeIdx = characters.findIndex((c) => c.id === view);
+  const active = activeIdx >= 0 ? characters[activeIdx] : null;
+  const showDashboard = !active;
 
   const submitNewChar = (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,37 +136,33 @@ export default function TrackerPage() {
         </div>
       </div>
 
-      {/* Account summary */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <SummaryCard
-          label="Weekly meso total"
-          value={formatMesos(totals.weekly)}
-          sub={formatMesosFull(totals.weekly) + " across roster"}
-          accent="var(--green)"
-        />
-        <SummaryCard
-          label="Crystals this week"
-          value={`${totals.crystals} / ${WEEKLY_CRYSTAL_LIMIT}`}
-          sub="account weekly sell cap (all crystals)"
-          accent="var(--accent-2)"
-          warn={totals.crystals > WEEKLY_CRYSTAL_LIMIT}
-        />
-        <MonthlyRpCard now={now} />
-      </div>
-
-      {/* Character tabs + inline add */}
+      {/* Tabs: Dashboard + characters + inline add */}
       <div className="flex gap-2 overflow-x-auto pb-1 items-stretch">
+        <button
+          onClick={() => setView("dashboard")}
+          className={`shrink-0 rounded-xl px-4 py-2.5 text-left border transition ${
+            showDashboard
+              ? "bg-surface-2 border-[var(--accent-2)]"
+              : "bg-surface border-transparent hover:border-border"
+          }`}
+        >
+          <div className="font-bold text-sm">📊 Dashboard</div>
+          <div className="text-xs text-muted mt-0.5">
+            {characters.length} character{characters.length === 1 ? "" : "s"}
+          </div>
+        </button>
+
         {characters.map((c, i) => {
           const color = tabColor(i);
           const done = Object.keys(c.bosses).filter(
             (b) => BOSS_BY_ID[b] && bossCount(counts, c.id, b) >= maxKills(BOSS_BY_ID[b].reset)
           ).length;
           const total = Object.keys(c.bosses).length;
-          const isActive = c.id === activeId;
+          const isActive = c.id === view;
           return (
             <button
               key={c.id}
-              onClick={() => setSelectedId(c.id)}
+              onClick={() => setView(c.id)}
               className={`shrink-0 rounded-xl px-4 py-2.5 text-left border transition ${
                 isActive
                   ? "bg-surface-2 border-border"
@@ -210,43 +197,53 @@ export default function TrackerPage() {
         </form>
       </div>
 
-      {!active ? (
-        <div className="card p-12 text-center">
-          <div className="text-5xl mb-3">🍁</div>
-          <h3 className="font-bold text-lg">No characters yet</h3>
-          <p className="text-muted text-sm mt-1">
-            Add your first character above to start building a boss checklist.
-          </p>
-        </div>
+      {showDashboard ? (
+        characters.length === 0 ? (
+          <div className="card p-12 text-center">
+            <div className="text-5xl mb-3">🍁</div>
+            <h3 className="font-bold text-lg">No characters yet</h3>
+            <p className="text-muted text-sm mt-1">
+              Add your first character above to start building a boss checklist.
+            </p>
+          </div>
+        ) : (
+          <Dashboard
+            characters={characters}
+            counts={counts}
+            reboot={reboot}
+            now={now}
+            onSelect={setView}
+          />
+        )
       ) : (
-        <CharacterPanel
-          key={active.id}
-          character={active}
-          index={activeIdx}
-          count={characters.length}
-          counts={counts}
-          reboot={reboot}
-          now={now}
-          onRename={(name) => renameCharacter(active.id, name)}
-          onRemove={() => {
-            if (confirm(`Delete ${active.name}?`)) removeCharacter(active.id);
-          }}
-          onReorder={(dir) => reorderCharacter(active.id, dir)}
-          onDuplicate={() => {
-            duplicateCharacter(active.id);
-            setSelectedId(null); // fall through to keep selection sensible
-          }}
-          onSetParty={(bossId, p) => setBossParty(active.id, bossId, p)}
-          onSetDifficulty={(bossId, d) => setBossDifficulty(active.id, bossId, d)}
-          onUnset={(bossId) => unsetBoss(active.id, bossId)}
-          onToggle={(bossId) => toggleDone(active.id, bossId, Date.now())}
-          onSetCount={(bossId, n) => setCount(active.id, bossId, n, Date.now())}
-          onSetAll={(v) => setAllForCharacter(active.id, v, Date.now())}
-          onAddBoss={() => setAdding(true)}
-        />
+        active && (
+          <CharacterPanel
+            key={active.id}
+            character={active}
+            index={activeIdx}
+            count={characters.length}
+            counts={counts}
+            reboot={reboot}
+            now={now}
+            onRename={(name) => renameCharacter(active.id, name)}
+            onRemove={() => {
+              if (confirm(`Delete ${active.name}?`)) {
+                removeCharacter(active.id);
+                setView("dashboard");
+              }
+            }}
+            onReorder={(dir) => reorderCharacter(active.id, dir)}
+            onDuplicate={() => duplicateCharacter(active.id)}
+            onSetParty={(bossId, p) => setBossParty(active.id, bossId, p)}
+            onSetDifficulty={(bossId, d) => setBossDifficulty(active.id, bossId, d)}
+            onUnset={(bossId) => unsetBoss(active.id, bossId)}
+            onToggle={(bossId) => toggleDone(active.id, bossId, Date.now())}
+            onSetCount={(bossId, n) => setCount(active.id, bossId, n, Date.now())}
+            onSetAll={(v) => setAllForCharacter(active.id, v, Date.now())}
+            onAddBoss={() => setAdding(true)}
+          />
+        )
       )}
-
-      <RpCalculator now={now} />
 
       {adding && active && (
         <AddBossModal
@@ -260,12 +257,146 @@ export default function TrackerPage() {
   );
 }
 
+// A character's monthly RP contribution from the bosses it has selected.
+interface CharRp {
+  daily: number;
+  weekly: number;
+  monthly: number;
+  total: number;
+}
+function charBossRp(
+  ch: Character,
+  rpOverrides: Record<string, RpOverride>,
+  now: number
+): CharRp {
+  const days = daysInMonth(now);
+  const thu = thursdaysInMonth(now);
+  const rate = (id: string) => rpOverrides[id]?.rp ?? RP_BY_ID[id].defaultRp;
+  const enabled = (id: string) => rpOverrides[id]?.on !== false;
+  const d = totalBossesTrackedByReset([ch], "daily");
+  const w = totalBossesTrackedByReset([ch], "weekly");
+  const m = totalBossesTrackedByReset([ch], "monthly");
+  const daily = enabled("daily-bosses") ? rate("daily-bosses") * d * days : 0;
+  const weekly = enabled("weekly-bosses") ? rate("weekly-bosses") * w * thu : 0;
+  const monthly = enabled("monthly-bosses") ? rate("monthly-bosses") * m : 0;
+  return { daily, weekly, monthly, total: daily + weekly + monthly };
+}
+
+function Dashboard({
+  characters,
+  counts,
+  reboot,
+  now,
+  onSelect,
+}: {
+  characters: Character[];
+  counts: Record<string, number>;
+  reboot: boolean;
+  now: number;
+  onSelect: (id: string) => void;
+}) {
+  const rpOverrides = useStore((s) => s.rpOverrides);
+  let weekly = 0;
+  let crystals = 0;
+  for (const ch of characters) {
+    weekly += characterMesos(ch, counts, reboot);
+    crystals += characterCrystals(ch, counts);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-3">
+        <SummaryCard
+          label="Weekly meso total"
+          value={formatMesos(weekly)}
+          sub={formatMesosFull(weekly) + " across roster"}
+          accent="var(--green)"
+        />
+        <SummaryCard
+          label="Crystals this week"
+          value={`${crystals} / ${WEEKLY_CRYSTAL_LIMIT}`}
+          sub="account weekly sell cap (all crystals)"
+          accent="var(--accent-2)"
+          warn={crystals > WEEKLY_CRYSTAL_LIMIT}
+        />
+        <MonthlyRpCard now={now} />
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-bold uppercase tracking-wide text-muted">
+          Characters — click for weekly details
+        </h3>
+        <div className="card divide-y divide-[var(--border)]">
+          {characters.map((c, i) => {
+            const wk = characterMesos(c, counts, reboot);
+            const wkCry = characterWeeklyCrystals(c, counts);
+            const totalCry = characterCrystals(c, counts);
+            const rp = charBossRp(c, rpOverrides, now);
+            return (
+              <button
+                key={c.id}
+                onClick={() => onSelect(c.id)}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-2/40 transition"
+              >
+                <span
+                  className="h-2.5 w-2.5 rounded-full shrink-0"
+                  style={{ background: tabColor(i) }}
+                />
+                <span className="font-bold flex-1 min-w-0 truncate">{c.name}</span>
+                <DashStat label="Meso / wk" value={formatMesos(wk)} accent="var(--green)" />
+                <DashStat
+                  label="Crystals"
+                  value={`${wkCry}/${WEEKLY_PER_CHARACTER_LIMIT}`}
+                  sub={`${totalCry} total`}
+                  warn={wkCry > WEEKLY_PER_CHARACTER_LIMIT}
+                />
+                <DashStat label="RP / mo" value={rp.total.toLocaleString()} accent="var(--accent)" />
+                <span className="text-muted shrink-0">→</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <RpCalculator now={now} />
+    </div>
+  );
+}
+
+function DashStat({
+  label,
+  value,
+  sub,
+  accent,
+  warn,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  accent?: string;
+  warn?: boolean;
+}) {
+  return (
+    <div className="text-right w-20 shrink-0 hidden sm:block">
+      <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
+      <div
+        className="font-bold text-sm tabular-nums"
+        style={{ color: warn ? "#f43f5e" : accent ?? "var(--foreground)" }}
+      >
+        {value}
+      </div>
+      {sub && <div className="text-[10px] text-muted">{sub}</div>}
+    </div>
+  );
+}
+
 function CharacterPanel({
   character,
   index,
   count,
   counts,
   reboot,
+  now,
   onRename,
   onRemove,
   onReorder,
@@ -296,13 +427,16 @@ function CharacterPanel({
   onSetAll: (value: boolean) => void;
   onAddBoss: () => void;
 }) {
+  const rpOverrides = useStore((s) => s.rpOverrides);
   const { id, name, bosses } = character;
   const weekly = characterMesos(character, counts, reboot);
   const potential = characterPotential(character, reboot);
   const pct = potential > 0 ? Math.round((weekly / potential) * 100) : 0;
   const weeklyCrystals = characterWeeklyCrystals(character, counts);
+  const totalCrystals = characterCrystals(character, counts);
   const overWeeklyCap = weeklyCrystals > WEEKLY_PER_CHARACTER_LIMIT;
   const added = Object.keys(bosses).length;
+  const rp = charBossRp(character, rpOverrides, now);
 
   return (
     <div className="space-y-5">
@@ -343,6 +477,25 @@ function CharacterPanel({
             Over the 14 weekly-crystal limit — only 14 weekly crystals can be sold per character each week.
           </p>
         )}
+
+        {/* This character's weekly stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4">
+          <RpStat label="Meso / week" value={formatMesos(weekly)} sub={formatMesosFull(weekly)} accent="var(--green)" />
+          <RpStat label="Potential / week" value={formatMesos(potential)} sub="if fully cleared" />
+          <RpStat
+            label="Crystals"
+            value={`${weeklyCrystals}/${WEEKLY_PER_CHARACTER_LIMIT} wk`}
+            sub={`${totalCrystals} total`}
+            accent={overWeeklyCap ? "#f43f5e" : undefined}
+          />
+          <RpStat
+            label="RP / month (bosses)"
+            value={rp.total.toLocaleString()}
+            sub={`D ${rp.daily.toLocaleString()} · W ${rp.weekly.toLocaleString()} · M ${rp.monthly.toLocaleString()}`}
+            accent="var(--accent)"
+          />
+        </div>
+
         <div className="flex items-center gap-2 mt-4 flex-wrap">
           <button className="btn btn-primary text-sm" onClick={onAddBoss}>+ Add boss</button>
           <button className="btn text-sm" onClick={() => onSetAll(true)}>Max all</button>
@@ -357,7 +510,11 @@ function CharacterPanel({
         </div>
       ) : (
         RESET_ORDER.map((reset) => {
-          const list = BOSSES.filter((b) => b.reset === reset && b.id in bosses);
+          const list = BOSSES.filter((b) => b.reset === reset && b.id in bosses).sort(
+            (a, b) =>
+              soloMesos(a.id, bosses[a.id].difficulty) -
+              soloMesos(b.id, bosses[b.id].difficulty)
+          );
           if (list.length === 0) return null;
           const maxK = maxKills(reset);
           return (

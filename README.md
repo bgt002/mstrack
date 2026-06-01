@@ -8,6 +8,10 @@ Everything lives on one page (`/`). All data is stored locally in your browser
 
 ## Features
 
+- **Dashboard** — account-wide totals (weekly meso, crystals/180, monthly RP) plus a per-character
+  overview (meso/week, crystals, monthly boss RP) you can click to drill into.
+- **Per-character view** — click a character to see its own weekly meso, potential, crystals, and
+  **monthly RP from its selected bosses** (daily/weekly/monthly breakdown), above its boss checklist.
 - **Characters, inline** — add characters by name as tabs; rename, reorder, **duplicate**, delete.
   Duplicating copies the character's tracked bosses and current kill counts into an independent copy.
 - Bosses are listed **cheapest-first** within each Daily/Weekly/Monthly section.
