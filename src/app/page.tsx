@@ -54,6 +54,8 @@ export default function TrackerPage() {
   const sold = useStore((s) => s.sold);
   const reboot = useStore((s) => s.reboot);
   const setReboot = useStore((s) => s.setReboot);
+  const autoResetWeekly = useStore((s) => s.autoResetWeekly);
+  const setAutoResetWeekly = useStore((s) => s.setAutoResetWeekly);
   const addCharacter = useStore((s) => s.addCharacter);
   const renameCharacter = useStore((s) => s.renameCharacter);
   const removeCharacter = useStore((s) => s.removeCharacter);
@@ -114,6 +116,10 @@ export default function TrackerPage() {
           <button className="btn" onClick={() => setReboot(!reboot)} title="Heroic (Reboot) worlds sell crystals for 5x">
             <span className={`inline-block h-2.5 w-2.5 rounded-full ${reboot ? "bg-green-400" : "bg-muted"}`} />
             Heroic ×5 {reboot ? "ON" : "OFF"}
+          </button>
+          <button className="btn" onClick={() => setAutoResetWeekly(!autoResetWeekly)} title="Automatically clear killed/sold markers when the weekly reset happens (Thursday 00:00 UTC)">
+            <span className={`inline-block h-2.5 w-2.5 rounded-full ${autoResetWeekly ? "bg-green-400" : "bg-muted"}`} />
+            Auto Reset {autoResetWeekly ? "ON" : "OFF"}
           </button>
           <ResetMenu now={now} onReset={resetByType} />
         </div>
@@ -567,29 +573,25 @@ function CharacterPanel({
                         {wasKilled ? "⚔ Killed" : "Kill"}
                       </button>
                       {boss.rpOnly ? null : sells > 1 ? (
-                        <div
-                          className="flex items-center rounded-md border border-border bg-surface-2 shrink-0"
-                          title="Crystals sold this week (drives mesos)"
-                        >
-                          <button
-                            className="px-1.5 py-1 text-muted hover:text-foreground disabled:opacity-30"
-                            onClick={() => onSetSold(boss.id, soldN - 1)}
-                            disabled={soldN <= 0}
-                          >
-                            −
-                          </button>
-                          <span
-                            className="w-12 text-center text-[11px] font-bold tabular-nums"
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <select
+                            value={soldN}
+                            onChange={(e) => onSetSold(boss.id, Number(e.target.value))}
+                            className="rounded-md border border-border bg-surface-2 px-1.5 py-1.5 text-[11px] font-bold tabular-nums outline-none cursor-pointer"
                             style={soldN > 0 ? { color: "var(--green)" } : undefined}
+                            title="Crystals sold this week (drives mesos)"
                           >
-                            💰{soldN}/{sells}
-                          </span>
+                            {Array.from({ length: sells + 1 }, (_, i) => (
+                              <option key={i} value={i}>💰 {i}/{sells}</option>
+                            ))}
+                          </select>
                           <button
-                            className="px-1.5 py-1 text-muted hover:text-foreground disabled:opacity-30"
-                            onClick={() => onSetSold(boss.id, soldN + 1)}
+                            onClick={() => onSetSold(boss.id, sells)}
                             disabled={soldN >= sells}
+                            className="text-[10px] font-bold rounded-md py-1.5 px-2 border border-border bg-surface-2 text-muted hover:text-foreground disabled:opacity-30 transition whitespace-nowrap"
+                            title="Sell all crystals for this boss"
                           >
-                            +
+                            Sell All
                           </button>
                         </div>
                       ) : (

@@ -42,6 +42,7 @@ export interface RosterState {
   weekAnchor: number;
   monthAnchor: number;
   reboot: boolean;
+  autoResetWeekly: boolean;
 
   // RP planner
   rpOverrides: Record<string, RpOverride>;
@@ -66,6 +67,7 @@ export interface RosterState {
   reconcile: (now: number) => void;
 
   setReboot: (v: boolean) => void;
+  setAutoResetWeekly: (v: boolean) => void;
   setRpOverride: (id: string, patch: RpOverride) => void;
   setMvpTier: (tier: MvpTier) => void;
 }
@@ -89,6 +91,7 @@ export const useStore = create<RosterState>()(
       weekAnchor: 0,
       monthAnchor: 0,
       reboot: false,
+      autoResetWeekly: true,
       rpOverrides: {},
       mvpTier: "None",
 
@@ -287,13 +290,15 @@ export const useStore = create<RosterState>()(
           const wk = weekStartUTC(now);
           const mo = monthStartUTC(now);
           if (s.weekAnchor === wk && s.monthAnchor === mo) return s;
+          const weekChanged = s.weekAnchor !== wk;
+          const monthChanged = s.monthAnchor !== mo;
           function filter<T>(m: Record<string, T>): Record<string, T> {
             const out: Record<string, T> = {};
             for (const [key, v] of Object.entries(m)) {
               const reset = resetOf(key.slice(key.indexOf(":") + 1));
               const stale =
-                ((reset === "daily" || reset === "weekly") && s.weekAnchor !== wk) ||
-                (reset === "monthly" && s.monthAnchor !== mo);
+                (s.autoResetWeekly && (reset === "daily" || reset === "weekly") && weekChanged) ||
+                (reset === "monthly" && monthChanged);
               if (!stale) out[key] = v;
             }
             return out;
@@ -307,6 +312,7 @@ export const useStore = create<RosterState>()(
         }),
 
       setReboot: (v) => set({ reboot: v }),
+      setAutoResetWeekly: (v) => set({ autoResetWeekly: v }),
 
       setRpOverride: (id, patch) =>
         set((s) => ({
@@ -317,7 +323,7 @@ export const useStore = create<RosterState>()(
     }),
     {
       name: "mapletracker-roster",
-      version: 9,
+      version: 10,
       partialize: (s) => ({
         characters: s.characters,
         killed: s.killed,
@@ -325,6 +331,7 @@ export const useStore = create<RosterState>()(
         weekAnchor: s.weekAnchor,
         monthAnchor: s.monthAnchor,
         reboot: s.reboot,
+        autoResetWeekly: s.autoResetWeekly,
         rpOverrides: s.rpOverrides,
         mvpTier: s.mvpTier,
       }),
@@ -408,6 +415,7 @@ export const useStore = create<RosterState>()(
         s.weekAnchor = (s.weekAnchor as number) ?? weekStartUTC(now);
         s.monthAnchor = (s.monthAnchor as number) ?? monthStartUTC(now);
         s.reboot = (s.reboot as boolean) ?? false;
+        s.autoResetWeekly = (s.autoResetWeekly as boolean) ?? true;
         s.rpOverrides = (s.rpOverrides as Record<string, RpOverride>) ?? {};
         s.mvpTier = (s.mvpTier as MvpTier) ?? "None";
         delete s.pages;
